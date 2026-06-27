@@ -289,6 +289,7 @@ export class SubagentsHistoryPanel {
         ...this.renderContext,
         theme: this.renderContext.theme ?? this.theme,
         cwd: this.renderContext.cwd ?? process.cwd(),
+        taskId: task.id,
         visibleWidth: this.renderContext.visibleWidth ?? this.visibleWidth,
         truncateToWidth: this.renderContext.truncateToWidth ?? this.truncateToWidth,
         renderWidth: width,

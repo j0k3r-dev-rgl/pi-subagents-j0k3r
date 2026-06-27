@@ -13,7 +13,7 @@ import { isSubagentsDebugEnabled, writeSubagentsDebugLog } from '../src/debug.js
 import { SubagentManager } from '../src/manager.js';
 import { registerSubagentTools } from '../src/tools.js';
 import { SubagentsHistoryPanel } from '../src/ui.js';
-import { boundThreadSnapshot, isValidThreadSnapshot, renderThreadBody, resetPiComponentCacheForTests } from '../src/thread-view.js';
+import { boundThreadSnapshot, isValidThreadSnapshot, registerSubagentRuntimeToolDefinition, renderThreadBody, resetPiComponentCacheForTests } from '../src/thread-view.js';
 import type { EffectiveSubagentProfile, SubagentModelProfiles, SubagentRunner, SubagentTask } from '../src/types.js';
 
 const require = createRequire(import.meta.url);
@@ -215,6 +215,50 @@ describe('subagents extension', () => {
 
       expect(lines.join('\n')).toContain('pi-extension-tool:180:memory_search:Memory Search:thread view:Found 1 memory result(s).');
       expect(lines.join('\n')).not.toContain('memory_search completed ·');
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
+  });
+
+  it('renders runtime subagent tool rows with Pi ToolExecutionComponent using the captured real tool definition', () => {
+    resetPiComponentCacheForTests();
+    const packageRoot = path.join(tmp, 'fake-pi-runtime-tool-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    const shimDir = path.join(tmp, 'bin-runtime-tool');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
+    fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
+      exports.ToolExecutionComponent = class {
+        constructor(name, id, args, options, definition) { this.name = name; this.args = args; this.definition = definition; }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult(result) { this.result = result; }
+        setExpanded() {}
+        render(width) { return ['pi-runtime-tool:' + width + ':' + this.name + ':' + this.definition.label + ':' + this.args.symbol + ':' + this.result.content[0].text]; }
+      };
+    `);
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = path.join(shimDir, 'pi');
+    try {
+      registerSubagentRuntimeToolDefinition('task-runtime-tools', 'find_symbol', { name: 'find_symbol', label: 'Find Symbol' });
+      const lines = renderThreadBody({
+        version: 1,
+        source: 'events',
+        items: [{ type: 'tool', name: 'find_symbol', status: 'completed', arguments: { symbol: 'registerSubagentTools' }, result: { content: [{ type: 'text', text: 'Found 1 match.' }], isError: false } }],
+      } as any, {
+        cwd: tmp,
+        taskId: 'task-runtime-tools',
+        tui: { requestRender() {} },
+        renderWidth: 180,
+        visibleWidth: (text: string) => text.length,
+        truncateToWidth: (text: string, width: number) => text.length > width ? text.slice(0, width) : text,
+      } as any);
+
+      expect(lines.join('\n')).toContain('pi-runtime-tool:180:find_symbol:Find Symbol:registerSubagentTools:Found 1 match.');
+      expect(lines.join('\n')).not.toContain('find_symbol completed ·');
     } finally {
       process.argv[1] = oldArgv1;
       resetPiComponentCacheForTests();

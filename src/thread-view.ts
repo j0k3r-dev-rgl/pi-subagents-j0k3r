@@ -181,6 +181,7 @@ function findRunningPiPackageRoot(): string | undefined {
 export function resetPiComponentCacheForTests(): void {
   piComponents = undefined;
   builtInToolDefinitionCache.clear();
+  runtimeToolDefinitionsByTask.clear();
 }
 
 function loadPiComponents(): Record<string, any> | undefined {
@@ -288,6 +289,21 @@ function renderUserItem(item: SubagentUserItem, context: SubagentThreadRenderCon
 }
 
 const builtInToolDefinitionCache = new Map<string, unknown>();
+const runtimeToolDefinitionsByTask = new Map<string, Map<string, unknown>>();
+
+export function registerSubagentRuntimeToolDefinition(taskId: string | undefined, name: string | undefined, definition: unknown): void {
+  if (!taskId || !name || !definition) return;
+  let byName = runtimeToolDefinitionsByTask.get(taskId);
+  if (!byName) {
+    byName = new Map<string, unknown>();
+    runtimeToolDefinitionsByTask.set(taskId, byName);
+  }
+  byName.set(name, definition);
+}
+
+export function runtimeToolDefinition(taskId: string | undefined, name: string): unknown {
+  return taskId ? runtimeToolDefinitionsByTask.get(taskId)?.get(name) : undefined;
+}
 
 function builtInToolDefinition(name: string, cwd: string): unknown {
   const key = `${cwd}\0${name}`;
@@ -360,7 +376,7 @@ function toolArgumentSummary(name: string, args: unknown): string {
 }
 
 function renderToolItem(item: SubagentToolItem, context: SubagentThreadRenderContext, width: number): string[] {
-  const toolDefinition = context.getToolDefinition?.(item.name) ?? builtInToolDefinition(item.name, context.cwd);
+  const toolDefinition = context.getToolDefinition?.(item.name) ?? runtimeToolDefinition(context.taskId, item.name) ?? builtInToolDefinition(item.name, context.cwd);
   const componentCtor = loadPiComponents()?.ToolExecutionComponent;
   if (typeof componentCtor === 'function' && context.tui && toolDefinition) {
     try {

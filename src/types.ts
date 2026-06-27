@@ -182,6 +182,7 @@ export type SubagentThreadRenderContext = {
   visibleWidth: (text: string) => number;
   truncateToWidth: (text: string, width: number) => string;
   renderWidth?: number;
+  taskId?: string;
   getToolDefinition?: (name: string) => unknown;
   getMessageRenderer?: (customType: string) => unknown;
   showImages?: boolean;

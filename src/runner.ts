@@ -1,7 +1,7 @@
 import { writeSubagentsDebugLog } from './debug.js';
 import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import { consumeLatestInteractionRequest, interactionRequestFromCandidate, sanitizeInteractionTransportText } from './interaction-channel.js';
-import { boundThreadSnapshot } from './thread-view.js';
+import { boundThreadSnapshot, registerSubagentRuntimeToolDefinition } from './thread-view.js';
 import type { SubagentInteractionRequest } from './interaction-channel.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentRunner, SubagentsConfig, UsageStats, ThinkingEffort, SubagentThreadItem, SubagentThreadSnapshot, SubagentToolItem, SubagentToolResultPayload } from './types.js';
 
@@ -455,6 +455,7 @@ async function promptWithInactivity(
   delegatedContext?: string,
   cwd?: string,
   systemPrompt?: string,
+  taskId?: string,
 ): Promise<{ result: string; usage: UsageStats; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }> {
   let output = '';
   const snapshotBuilder = new ThreadSnapshotBuilder(prompt, delegatedContext, cwd);
@@ -478,7 +479,10 @@ async function promptWithInactivity(
       resultKeys: event?.result && typeof event.result === 'object' ? Object.keys(event.result) : undefined,
       interactionCarrier: event?.type === 'tool_execution_end' ? summarizeInteractionCarrier(event?.result) : undefined,
     });
-    if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) sawToolActivity = true;
+    if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) {
+      sawToolActivity = true;
+      registerSubagentRuntimeToolDefinition(taskId, event?.toolName, session.getToolDefinition?.(event?.toolName));
+    }
     snapshotBuilder.update(event);
     const thread_snapshot = snapshotBuilder.snapshot();
     const transcriptChunk = eventTranscript(event);
@@ -659,7 +663,7 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
     const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
     try {
       const effectiveSystemPrompt = typeof session.systemPrompt === 'string' ? session.systemPrompt : systemPrompt;
-      const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(session, prompt, config.stall_timeout_ms, signal, onActivity, context, cwd, effectiveSystemPrompt);
+      const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(session, prompt, config.stall_timeout_ms, signal, onActivity, context, cwd, effectiveSystemPrompt, taskId);
       return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt };
     } finally {
       unregisterInteractionSession();
