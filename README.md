@@ -127,7 +127,7 @@ Config files:
 .pi/subagents.json              # project
 ```
 
-Config resolves as a cascade: project `.pi/subagents.json` overrides global `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. Model profiles are merged by normalized lowercase agent name, with project profile fields overriding global profile fields.
+Config resolves as a cascade: project `.pi/subagents.json` overrides global `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. `model_profiles` are the explicit exception: per-agent model/effort routing is read only from the global `~/.pi/agent/subagents.json` or `$PI_CODING_AGENT_DIR/subagents.json`, and project-local `model_profiles` are ignored.
 
 Example:
 
@@ -168,7 +168,7 @@ Example:
 |---|---:|---|
 | `default_model` | current orchestrator model | Fallback model for all subagents. Format: `provider/model-id`. |
 | `default_effort` | current orchestrator effort | Fallback thinking effort. Also accepts `default_thinking_level` or `thinkingLevel`. |
-| `model_profiles` | `{}` | Per-agent model/effort overrides. |
+| `model_profiles` | `{}` | Global-only per-agent model/effort overrides. Project-local `.pi/subagents.json` `model_profiles` are ignored. |
 | `timeout_ms` | `600000` | Total timeout per subagent task. |
 | `stall_timeout_ms` | `120000` | Inactivity timeout for a subagent session. |
 | `max_concurrency` | `5` | Max concurrent subagent tasks per cwd/config pair. |

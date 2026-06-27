@@ -163,16 +163,6 @@ function parseModelProfiles(value: unknown): SubagentModelProfiles {
   return profiles;
 }
 
-function mergeModelProfiles(globalRaw: unknown, projectRaw: unknown): SubagentModelProfiles {
-  const globalProfiles = parseModelProfiles(globalRaw);
-  const projectProfiles = parseModelProfiles(projectRaw);
-  const merged: SubagentModelProfiles = { ...globalProfiles };
-  for (const [name, projectProfile] of Object.entries(projectProfiles)) {
-    merged[name] = { ...(merged[name] ?? {}), ...projectProfile };
-  }
-  return merged;
-}
-
 function serializeModelRef(model: ModelRef): string {
   return `${model.provider}/${model.id}`;
 }
@@ -191,7 +181,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
   return {
     default_model: parseModel(raw.default_model),
     default_effort: parseEffort(raw.default_effort ?? raw.default_thinking_level ?? raw.thinkingLevel),
-    model_profiles: mergeModelProfiles(globalRaw.model_profiles, projectRaw.model_profiles),
+    model_profiles: parseModelProfiles(globalRaw.model_profiles),
     timeout_ms: positiveInteger(raw.timeout_ms, DEFAULT_TIMEOUT_MS),
     stall_timeout_ms: positiveInteger(raw.stall_timeout_ms, DEFAULT_STALL_TIMEOUT_MS),
     max_concurrency: positiveInteger(raw.max_concurrency, DEFAULT_MAX_CONCURRENCY),

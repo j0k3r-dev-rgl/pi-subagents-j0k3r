@@ -1508,19 +1508,21 @@ describe('subagents extension', () => {
     expect(config.default_tools).toEqual(['read']);
   });
 
-  it('loads model_profiles from global and project config with invalid fields ignored', () => {
+  it('loads model_profiles only from global config and ignores project-local model routing', () => {
     const agentDir = path.join(tmp, 'global-agent');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({
       model_profiles: {
         analyst: { model: 'anthropic/claude-sonnet-4-5', effort: 'high' },
+        reviewer: { model: 'openai/gpt-5.2', effort: 'low' },
         invalidEffort: { model: 'openai/gpt-5.2', effort: 'extreme' },
         invalidModel: { model: 'missing-provider', effort: 'low' },
       },
     }));
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({
       model_profiles: {
-        reviewer: { model: { provider: 'openai', id: 'gpt-5.2-codex' }, effort: 'medium' },
+        analyst: { model: { provider: 'openai', id: 'gpt-5.2-codex' }, effort: 'medium' },
+        projectOnly: { model: 'anthropic/claude-opus-4-5', effort: 'xhigh' },
       },
     }));
 
@@ -1528,9 +1530,9 @@ describe('subagents extension', () => {
 
     expect(config.model_profiles).toEqual({
       analyst: { model: { provider: 'anthropic', id: 'claude-sonnet-4-5' }, effort: 'high' },
+      reviewer: { model: { provider: 'openai', id: 'gpt-5.2' }, effort: 'low' },
       invalidEffort: { model: { provider: 'openai', id: 'gpt-5.2' } },
       invalidModel: { effort: 'low' },
-      reviewer: { model: { provider: 'openai', id: 'gpt-5.2-codex' }, effort: 'medium' },
     });
   });
 
@@ -1612,7 +1614,7 @@ describe('subagents extension', () => {
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
   });
 
-  it('deep-merges model_profiles with project field precedence while scalar config precedence is unchanged', () => {
+  it('keeps model_profiles global-only while scalar config precedence is unchanged', () => {
     const agentDir = path.join(tmp, 'global-agent');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({
@@ -1643,8 +1645,8 @@ describe('subagents extension', () => {
     const config = withAgentDir(agentDir, () => readSubagentsConfig(tmp));
 
     expect(config.model_profiles).toEqual({
-      analyst: { model: { provider: 'global', id: 'analyst' }, effort: 'xhigh' },
-      reviewer: { model: { provider: 'project', id: 'reviewer' }, effort: 'minimal' },
+      analyst: { model: { provider: 'global', id: 'analyst' }, effort: 'low' },
+      reviewer: { effort: 'minimal' },
     });
     expect(config.default_model).toEqual({ provider: 'project', id: 'model' });
     expect(config.default_effort).toBe('high');
@@ -1747,7 +1749,9 @@ describe('subagents extension', () => {
 
   it('builds model profile rows for loaded agents and known SDD phases with labels', () => withAgentDir(path.join(tmp, 'isolated-agent'), () => {
     writeAgent('analyst');
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({
+    const agentDir = path.join(tmp, 'isolated-agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({
       model_profiles: {
         analyst: { model: 'missing/provider-model', effort: 'high' },
         'sdd-spec': { effort: 'medium' },
@@ -2390,7 +2394,9 @@ describe('subagents extension', () => {
 
   it('resolves task metadata before running and passes the same effective profile to the runner', async () => {
     writeAgent('analyst');
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({
       model_profiles: { analyst: { model: 'profile/model', effort: 'xhigh' } },
     }));
     const seenUpdates: SubagentTask[][] = [];
@@ -2401,12 +2407,19 @@ describe('subagents extension', () => {
     };
     const manager = new SubagentManager(runner);
 
-    const result = await manager.run(
-      { agent: 'analyst', task: 'profiled work', mode: 'task' },
-      { cwd: tmp, model: { provider: 'orchestrator', id: 'model' }, thinkingLevel: 'low' },
-      undefined,
-      (tasks) => seenUpdates.push(tasks.map((task) => ({ ...task }))),
-    );
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    let result!: Awaited<ReturnType<SubagentManager['run']>>;
+    try {
+      result = await manager.run(
+        { agent: 'analyst', task: 'profiled work', mode: 'task' },
+        { cwd: tmp, model: { provider: 'orchestrator', id: 'model' }, thinkingLevel: 'low' },
+        undefined,
+        (tasks) => seenUpdates.push(tasks.map((task) => ({ ...task }))),
+      );
+    } finally {
+      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+    }
 
     const queued = seenUpdates.flat().find((task) => task.status === 'queued');
     expect(queued).toMatchObject({ model: 'profile/model', effort: 'xhigh', model_source: 'profile', effort_source: 'profile' });
@@ -2815,14 +2828,23 @@ describe('subagents extension', () => {
 
   it('persists effective model and effort source metadata for rendering', async () => {
     writeAgent('analyst');
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { effort: 'high' } } }));
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { effort: 'high' } } }));
     const manager = new SubagentManager(async ({ effectiveProfile }) => ({
       result: 'source-aware result',
       model: effectiveProfile?.model.label.replace(/^orchestrator: /, ''),
       effort: effectiveProfile?.effort.value,
       fallback_used: false,
     }));
-    const result = await manager.run({ agent: 'analyst', task: 'source metadata', mode: 'task' }, { cwd: tmp, model: { provider: 'mock', id: 'model' } });
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    let result!: Awaited<ReturnType<SubagentManager['run']>>;
+    try {
+      result = await manager.run({ agent: 'analyst', task: 'source metadata', mode: 'task' }, { cwd: tmp, model: { provider: 'mock', id: 'model' } });
+    } finally {
+      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+    }
     const freshManager = new SubagentManager(mockRunner());
     const persisted = freshManager.getTask(result.task_ids[0], tmp);
     expect(persisted).toMatchObject({ model: 'mock/model', effort: 'high', model_source: 'orchestrator', effort_source: 'profile' });
