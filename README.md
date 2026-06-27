@@ -67,10 +67,12 @@ Subagents are markdown files with optional YAML-like frontmatter.
 
 Load order:
 
-1. Global user subagents from `$PI_CODING_AGENT_DIR/subagents/*.md`.
-2. Project subagents from `.pi/subagents/*.md`.
+1. Global user agents from `$PI_CODING_AGENT_DIR/agents/*.md`.
+2. Global user subagents from `$PI_CODING_AGENT_DIR/subagents/*.md`.
+3. Project agents from `.pi/agents/*.md`.
+4. Project subagents from `.pi/subagents/*.md`.
 
-Project definitions override global definitions with the same normalized name.
+Project definitions override global definitions with the same normalized name. Within the same scope, `subagents` definitions override `agents` definitions with the same normalized name and Pi shows a startup warning so the duplicate can be cleaned up.
 
 Default global agent directory:
 
@@ -392,7 +394,7 @@ This package bundles:
 - `index.ts` and `src/**` — the Pi extension runtime.
 - `skills/subagents-configuration/SKILL.md` — configuration guidance for agents that need to create or edit subagent definitions.
 
-Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/subagents/*.md` or project-locally in `.pi/subagents/*.md`.
+Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`.
 
 ## Development
 

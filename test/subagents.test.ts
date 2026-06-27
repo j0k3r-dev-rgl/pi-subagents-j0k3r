@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, completionMessage, createSubagentsPanelKeyMatcher, moveClaudeBackgroundWidgetSelection, renderClaudeBackgroundWidgetLines, resolveRegisteredToolDefinition } from '../index.js';
-import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile } from '../src/config.js';
+import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile, subagentSourceWarnings } from '../src/config.js';
 import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
 import { applyDirtyProfileEdit, buildModelProfileRows, buildNoChangesModelProfilesMessage, buildNonTuiModelProfilesMessage, commitStagedModelProfiles, createSubagentModelProfilesModal, globalSubagentsConfigPath, groupAvailableModelsByProvider, runSubagentModelsCommand, stageModelProfileEdit } from '../src/model-profiles-ui.js';
@@ -1268,6 +1268,37 @@ describe('subagents extension', () => {
     expect(rendered).not.toContain('…');
   });
 
+  it('notifies duplicate agents/subagents names at session startup', () => {
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(path.join(agentDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(agentDir, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'agents', 'dup.md'), `---\nname: dup\ndescription: global agents dup\n---\n# Dup`);
+    fs.writeFileSync(path.join(agentDir, 'subagents', 'dup.md'), `---\nname: dup\ndescription: global subagents dup\n---\n# Dup`);
+    const notifications: Array<[string, string | undefined]> = [];
+    let sessionStart: any;
+    const previousCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      withAgentDir(agentDir, () => {
+        extension({
+          registerTool: () => undefined,
+          registerCommand: () => undefined,
+          registerShortcut: () => undefined,
+          on: (event: string, handler: any) => { if (event === 'session_start') sessionStart = handler; },
+        });
+        sessionStart?.({}, { cwd: tmp, ui: { notify: (message: string, level?: string) => notifications.push([message, level]) } });
+      });
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0][0]).toContain('Duplicate subagent name');
+    expect(notifications[0][0]).toContain('dup');
+    expect(notifications[0][0]).toContain('using subagents');
+    expect(notifications[0][1]).toBe('warning');
+  });
+
   it('registers the configured opencode history panel and detail cancel shortcuts at extension startup', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'opencode', history_panel_shortcut: 'ctrl+p', detail_cancel_shortcut: 'ctrl+shift+q' }));
     const previousCwd = process.cwd();
@@ -1506,6 +1537,48 @@ describe('subagents extension', () => {
     expect(agents.map((a) => `${a.name}:${a.description}`).sort()).toEqual(['analyst:project analyst', 'reviewer:global reviewer']);
     expect(config.max_concurrency).toBe(2);
     expect(config.default_tools).toEqual(['read']);
+  });
+
+  it('loads agents and subagents sources with project-local definitions taking precedence', () => {
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(path.join(agentDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(agentDir, 'subagents'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.pi', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'agents', 'shared.md'), `---\nname: shared\ndescription: global agents shared\ntools:\n  - read\n---\n# Global Agents Shared`);
+    fs.writeFileSync(path.join(agentDir, 'subagents', 'shared.md'), `---\nname: shared\ndescription: global subagents shared\ntools:\n  - read\n---\n# Global Subagents Shared`);
+    fs.writeFileSync(path.join(agentDir, 'agents', 'global-only.md'), `---\nname: global-only\ndescription: global agents only\ntools:\n  - read\n---\n# Global Agents Only`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'agents', 'shared.md'), `---\nname: shared\ndescription: project agents shared\ntools:\n  - read\n---\n# Project Agents Shared`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'shared.md'), `---\nname: shared\ndescription: project subagents shared\ntools:\n  - read\n---\n# Project Subagents Shared`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'agents', 'project-only.md'), `---\nname: project-only\ndescription: project agents only\ntools:\n  - read\n---\n# Project Agents Only`);
+
+    const agents = withAgentDir(agentDir, () => loadSubagents(tmp));
+
+    expect(agents.map((a) => `${a.name}:${a.description}`).sort()).toEqual([
+      'global-only:global agents only',
+      'project-only:project agents only',
+      'shared:project subagents shared',
+    ]);
+  });
+
+  it('reports duplicate names between agents and subagents at the same scope', () => {
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(path.join(agentDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(agentDir, 'subagents'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.pi', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'agents', 'dup.md'), `---\nname: dup\ndescription: global agents dup\n---\n# Dup`);
+    fs.writeFileSync(path.join(agentDir, 'subagents', 'dup.md'), `---\nname: dup\ndescription: global subagents dup\n---\n# Dup`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'agents', 'local-dup.md'), `---\nname: local-dup\ndescription: project agents dup\n---\n# Dup`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'local-dup.md'), `---\nname: local-dup\ndescription: project subagents dup\n---\n# Dup`);
+
+    const warnings = withAgentDir(agentDir, () => subagentSourceWarnings(tmp));
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('global');
+    expect(warnings[0]).toContain('dup');
+    expect(warnings[0]).toContain('agents');
+    expect(warnings[0]).toContain('subagents');
+    expect(warnings[1]).toContain('project');
+    expect(warnings[1]).toContain('local-dup');
   });
 
   it('loads model_profiles only from global config and ignores project-local model routing', () => {

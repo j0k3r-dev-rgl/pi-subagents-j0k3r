@@ -240,10 +240,37 @@ function loadSubagentsFromDir(dir: string): SubagentDefinition[] {
     });
 }
 
+function agentsDirSources(cwd: string): Array<{ scope: 'global' | 'project'; kind: 'agents' | 'subagents'; dir: string }> {
+  const globalAgentDir = agentDir();
+  return [
+    { scope: 'global', kind: 'agents', dir: path.join(globalAgentDir, 'agents') },
+    { scope: 'global', kind: 'subagents', dir: path.join(globalAgentDir, 'subagents') },
+    { scope: 'project', kind: 'agents', dir: path.join(cwd, '.pi', 'agents') },
+    { scope: 'project', kind: 'subagents', dir: path.join(cwd, '.pi', 'subagents') },
+  ];
+}
+
+export function subagentSourceWarnings(cwd: string): string[] {
+  const warnings: string[] = [];
+  for (const scope of ['global', 'project'] as const) {
+    const sources = agentsDirSources(cwd).filter((source) => source.scope === scope);
+    const agents = loadSubagentsFromDir(sources.find((source) => source.kind === 'agents')!.dir);
+    const subagents = loadSubagentsFromDir(sources.find((source) => source.kind === 'subagents')!.dir);
+    const subagentNames = new Map(subagents.map((definition) => [definition.name, definition]));
+    for (const agent of agents) {
+      const subagent = subagentNames.get(agent.name);
+      if (!subagent) continue;
+      warnings.push(`Duplicate subagent name "${agent.name}" found in ${scope} agents and subagents directories; using subagents definition (${subagent.filePath}).`);
+    }
+  }
+  return warnings;
+}
+
 export function loadSubagents(cwd: string): SubagentDefinition[] {
   const byName = new Map<string, SubagentDefinition>();
-  for (const agent of loadSubagentsFromDir(path.join(agentDir(), 'subagents'))) byName.set(agent.name, agent);
-  for (const agent of loadSubagentsFromDir(path.join(cwd, '.pi', 'subagents'))) byName.set(agent.name, agent);
+  for (const source of agentsDirSources(cwd)) {
+    for (const agent of loadSubagentsFromDir(source.dir)) byName.set(agent.name, agent);
+  }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 

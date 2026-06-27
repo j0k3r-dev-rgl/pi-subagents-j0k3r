@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 - 2026-06-27
+
+### Added
+- Added support for loading markdown-defined subagents from both `agents` and `subagents` directories globally and project-locally.
+- Added startup warnings when duplicate names exist in `agents` and `subagents` at the same scope, while preserving `subagents` as the winning source.
+- Enabled project Skill Registry configuration and ignored generated registry cache outputs.
+
+### Fixed
+- Made `model_profiles` global-only so project-local `.pi/subagents.json` cannot override per-agent model/effort routing.
+
+### Documentation
+- Updated README and Subagents configuration skill guidance for `agents`/`subagents` source precedence and global-only model profiles.
+
 ## 1.0.1 - 2026-06-27
 
 ### Fixed

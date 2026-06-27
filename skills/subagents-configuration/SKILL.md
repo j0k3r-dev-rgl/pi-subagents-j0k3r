@@ -19,10 +19,13 @@ Use this block as the machine-readable source for `.pi/skill-registry.json` gene
   "domains": ["subagents-configuration", "subagent-config", "model-profile-config", "tool-allowlist-config", "subagent-history-config", "subagent-shortcut-config"],
   "triggers": {
     "paths": [
+      ".pi/agents/**/*.md",
       ".pi/subagents/**/*.md",
       ".pi/subagents.json",
+      "agents/**/*.md",
       "subagents/**/*.md",
       "subagents.json",
+      "~/.pi/agent/agents/**/*.md",
       "~/.pi/agent/subagents/**/*.md",
       "~/.pi/agent/subagents.json"
     ],
@@ -88,8 +91,8 @@ Do not load this skill for ordinary subagent delegation/use (`subagent_run`, tas
 - Prefer narrow tool allowlists per subagent. Do not grant write/bash tools unless the subagent purpose requires them.
 - For SDD/PRD phase agents, prefer deterministic active-flow memory tools only: `memory_search`, `memory_get`, `memory_add`, and `memory_update`; avoid `memory_context` and `memory_recall` in subagent allowlists unless there is a specific reviewed need.
 - For SDD phase agents, memory write tools may be allowed only for active SDD flow memory/artifacts according to `sdd-workflow`.
-- Project subagents live in `.pi/subagents/*.md`; global user subagents live in `$PI_CODING_AGENT_DIR/subagents/*.md` or `~/.pi/agent/subagents/*.md`.
-- Project definitions override global definitions with the same normalized name.
+- Project subagent definitions live in `.pi/agents/*.md` and `.pi/subagents/*.md`; global user definitions live in `$PI_CODING_AGENT_DIR/agents/*.md`, `$PI_CODING_AGENT_DIR/subagents/*.md`, `~/.pi/agent/agents/*.md`, or `~/.pi/agent/subagents/*.md`.
+- Project definitions override global definitions with the same normalized name. Within the same scope, definitions in `subagents` override definitions in `agents` with the same normalized name, and Pi should warn at session startup so users can clean up the duplicate.
 - Subagents config resolves as a cascade: project `.pi/subagents.json` overrides global `$PI_CODING_AGENT_DIR/subagents.json` or `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. Communicate this precedence to users when explaining config behavior, with the explicit exception that `model_profiles` are global-only.
 - `model_profiles` are read only from global `$PI_CODING_AGENT_DIR/subagents.json` or `~/.pi/agent/subagents.json`; project-local `.pi/subagents.json` must not set or override subagent model/effort routing.
 - Prefer configuring subagent `model` and `effort` in global `subagents.json` under `model_profiles`, not in project-local config or in the subagent markdown frontmatter. Markdown definitions should usually contain identity, description, tool allowlist, and behavioral instructions only.
@@ -182,8 +185,8 @@ Model/effort resolution order:
 
 1. Identify target scope: npm package install/update, global subagent, project subagent, global config, or project config, and explain the cascade when relevant: project-local config first, then global config for missing fields, then built-in defaults.
 2. For package setup, inspect settings before editing; use `pi install npm:pi-subagents-j0k3r` when possible, or edit `~/.pi/agent/settings.json` only when the CLI is unavailable/broken. Prefer unpinned `npm:pi-subagents-j0k3r` unless the user asks for a fixed version.
-3. Read existing subagent markdown/config before editing.
-4. For new subagents, choose lowercase kebab-case names and clear trigger-focused descriptions.
+3. Read existing subagent markdown/config before editing, checking both `agents` and `subagents` directories for the requested scope.
+4. For new subagents, choose lowercase kebab-case names and clear trigger-focused descriptions. Prefer `subagents` for new definitions unless the user explicitly needs compatibility with an `agents` harness.
 5. Set minimal tool allowlists; remove any `subagent_*` entries.
 6. Configure `model_profiles` only in global `subagents.json` when the user wants explicit per-agent routing; project-local `model_profiles` are ignored. Configure `default_model` and `default_effort` in effective `subagents.json` only when the user wants defaults. Do not put model routing in subagent markdown unless the user explicitly asks for per-file overrides. Explain that unconfigured fields inherit from the orchestrator.
 7. Configure `debug: true` only for temporary diagnostics; keep `debug: false` by default and remember logs are written under the executing project's `.pi` directory.
@@ -200,7 +203,7 @@ Model/effort resolution order:
 Return:
 
 - Skill applied: `subagents-configuration`.
-- Scope/path configured or reviewed.
+- Scope/path configured or reviewed, including whether definitions came from `agents` or `subagents`.
 - Package settings and subagents/config fields added, changed, or preserved.
 - Tool allowlist, system-prompt isolation, Context7 scope, memory-tool scope, debug logging, model/effort decisions, and inheritance behavior.
 - Runtime behavior explained when relevant: task vs background, automatic notifications, `/subagents`, `ctrl+o`, and `subagent_result`.

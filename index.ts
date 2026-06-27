@@ -1,5 +1,5 @@
 import { SubagentManager } from './src/manager.js';
-import { readSubagentsConfig } from './src/config.js';
+import { readSubagentsConfig, subagentSourceWarnings } from './src/config.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from './src/tools.js';
 import { runSubagentModelsCommand } from './src/model-profiles-ui.js';
 import { SubagentsHistoryPanel } from './src/ui.js';
@@ -412,6 +412,8 @@ export default function subagentsExtension(pi: any): void {
 
   pi.on?.('session_start', (_event: unknown, ctx: any) => {
     clearClaudeBackgroundWidget();
+    const cwd = ctx?.cwd ?? process.cwd();
+    for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
     if (typeof ctx?.ui?.setWidget !== 'function') return;
     widgetCtx = ctx;
     if (!installClaudeBackgroundWidget(ctx)) return;
