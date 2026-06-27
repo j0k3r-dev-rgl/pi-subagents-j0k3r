@@ -1,0 +1,30 @@
+{
+	"enabled": true,
+	"project_name": "pi-subagents-j0k3r",
+	"aliases": [],
+	"default_scope": "project",
+	"debug": false,
+	"session_end": {
+		"semantic": false
+	},
+	"import": {
+		"mode": "merge",
+		"on_conflict": "keep_local"
+	},
+	"backups": {
+		"path": ".pi/memory-backups/memory-backup.jsonl",
+		"mode": "merge",
+		"include_sessions": true
+	},
+	"cloud": {
+		"enabled": false
+	},
+	"git": {
+		"enabled": false,
+		"sync": {
+			"cloud": false,
+			"export": false,
+			"import": false
+		}
+	}
+}

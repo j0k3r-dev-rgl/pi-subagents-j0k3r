@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.pi/subagents.json
+.pi/subagents-debug.log

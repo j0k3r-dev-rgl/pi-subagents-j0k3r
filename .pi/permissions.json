@@ -1,0 +1,106 @@
+{
+	"enabled": true,
+	"bypassAll": true,
+	"workspace": {
+		"allowRead": "allow",
+		"allowWrite": "allow",
+		"allowCreate": "allow",
+		"list": "allow",
+		"search": "allow",
+		"followSymlinks": "realpath",
+		"ask": [],
+		"deny": []
+	},
+	"outsideWorkspace": {
+		"read": "ask",
+		"list": "ask",
+		"search": "ask",
+		"write": "ask",
+		"create": "ask",
+		"rememberApprovals": "session"
+	},
+	"secrets": {
+		"mode": "deny",
+		"maxPreviewBytesForPrompt": 0
+	},
+	"tools": {
+		"read": "policy",
+		"write": "policy",
+		"edit": "policy",
+		"grep": "policy",
+		"find": "policy",
+		"ls": "policy",
+		"bash": "policy"
+	},
+	"bash": {
+		"default": "ask",
+		"network": "ask",
+		"workspaceReadOnly": "allow",
+		"outsideWorkspaceFilesystem": "ask",
+		"envSecretExposure": "deny",
+		"safeCommands": [
+			"regex:^npm\\s+run\\s+typecheck(?:\\s+--\\s+.*)?$",
+			"regex:^npm\\s+test(?:\\s+.*)?$",
+			"npm run pack:dry-run",
+			"npx vitest run test/runner.test.ts -t \"fails stalled tool sessions\""
+		],
+		"scopedApprovals": [
+			{
+				"version": 1,
+				"id": "bash_approval_4899b185-e672-4c48-a231-ba32774fd716",
+				"createdAt": "2026-06-26T23:22:56.848Z",
+				"normalizedCommand": "find /home/j0k3r/.nvm/versions/node/v24.14.0/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions -maxdepth 2 -type f | sort",
+				"commandSignature": "sha256:4c29b8cce4a9b33f6ad8a55d168e9bf5061204ead63ac4475ef5a7d2124e7fc0",
+				"effectSignature": "sha256:3be234631a41c7a1372b0e333eca53b372cb2dcc00b9c8ceb5ac2ad022f4dc16",
+				"allowedRoots": [
+					{
+						"kind": "directory",
+						"raw": "/home/j0k3r/.nvm/versions/node/v24.14.0/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions",
+						"normalizedAbsolute": "/home/j0k3r/.nvm/versions/node/v24.14.0/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions",
+						"resolvedRealpath": "/home/j0k3r/.nvm/versions/node/v24.14.0/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions"
+					}
+				],
+				"reasonCode": "bash_outside_workspace_requires_approval",
+				"source": "project"
+			}
+		],
+		"askCommands": [
+			"rm *",
+			"mv *",
+			"cp *",
+			"git clean *",
+			"git reset *",
+			"npm install *",
+			"pnpm add *",
+			"pip install *"
+		],
+		"denyCommands": [
+			"sudo *",
+			"su *",
+			"chmod 777 *",
+			"chown *",
+			"rm -rf /",
+			"rm -rf ~",
+			"curl * | sh",
+			"wget * | sh"
+		]
+	},
+	"pathApprovals": {
+		"scopedApprovals": []
+	},
+	"nonInteractive": {
+		"onAsk": "deny",
+		"allowSessionApprovals": false
+	},
+	"approvals": {
+		"sessionCache": true,
+		"allowForSession": true
+	},
+	"audit": {
+		"enabled": true,
+		"logAllowed": false,
+		"logDenied": true,
+		"logApprovals": true,
+		"redactPaths": true
+	}
+}
