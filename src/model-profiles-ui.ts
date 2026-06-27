@@ -1,8 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
-import { loadSubagents, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile } from './config.js';
+import { loadSubagents, readSubagentsConfig, resetSubagentModelProfileField, saveSubagentModelProfile } from './config.js';
 import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
-import type { ModelRef, SubagentDefinition, SubagentModelProfile, SubagentModelProfiles, SubagentsConfig, ThinkingEffort } from './types.js';
+import type { ModelRef, SubagentDefinition, SubagentDefinitionScope, SubagentModelProfile, SubagentModelProfiles, SubagentsConfig, ThinkingEffort } from './types.js';
 
 export const KNOWN_SDD_PHASES = [
   'sdd-explore',
@@ -28,10 +28,15 @@ export type ModelProfileRow = {
   effectiveModel?: ModelRef;
   effectiveEffort?: ThinkingEffort;
   explicitProfile: SubagentModelProfile;
+  scope?: SubagentDefinitionScope;
 };
 
 export function globalSubagentsConfigPath(agentDir = path.join(os.homedir(), '.pi', 'agent')): string {
   return path.join(agentDir, 'subagents.json');
+}
+
+export function projectSubagentsConfigPath(cwd: string): string {
+  return path.join(cwd, '.pi', 'subagents.json');
 }
 
 function modelKey(model: ModelRef): string {
@@ -101,7 +106,8 @@ export function buildModelProfileRows(input: {
         effortLabel: resolved.effort.label,
         effectiveModel: resolved.model.value,
         effectiveEffort: resolved.effort.value,
-        explicitProfile: { ...(input.config.model_profiles[definition.name] ?? {}) },
+        explicitProfile: { ...((definition.scope === 'project' ? input.config.project_model_profiles?.[definition.name] : input.config.global_model_profiles?.[definition.name]) ?? {}) },
+        scope: definition.scope ?? 'global',
       };
     });
 }
@@ -156,16 +162,25 @@ export function applyDirtyProfileEdit(input: {
   return nextDirtyProfiles;
 }
 
-export function commitStagedModelProfiles(input: { stagedProfiles: SubagentModelProfiles; save: boolean; agentDir?: string }): string {
-  if (!input.save) return `Cancelled. No changes written to ${globalSubagentsConfigPath(input.agentDir)}.`;
+export function commitStagedModelProfiles(input: { stagedProfiles: SubagentModelProfiles; save: boolean; agentDir?: string; cwd?: string; profileScopes?: Record<string, SubagentDefinitionScope> }): string {
+  const globalPath = globalSubagentsConfigPath(input.agentDir);
+  const projectPath = input.cwd ? projectSubagentsConfigPath(input.cwd) : undefined;
+  if (!input.save) return `Cancelled. No changes written to ${globalPath}.`;
+  const touched = new Set<string>();
   for (const [agentName, profile] of Object.entries(input.stagedProfiles)) {
-    if (profile.model || profile.effort) saveGlobalSubagentModelProfile({ agentName, profile, agentDir: input.agentDir });
+    const scope = input.profileScopes?.[agentName.trim().toLowerCase()] ?? 'global';
+    const target = scope === 'project' && input.cwd ? projectPath! : globalPath;
+    touched.add(target);
+    if (profile.model || profile.effort) saveSubagentModelProfile({ agentName, profile, scope, cwd: input.cwd, agentDir: input.agentDir });
     else {
-      resetGlobalSubagentModelProfileField({ agentName, field: 'model', agentDir: input.agentDir });
-      resetGlobalSubagentModelProfileField({ agentName, field: 'effort', agentDir: input.agentDir });
+      resetSubagentModelProfileField({ agentName, field: 'model', scope, cwd: input.cwd, agentDir: input.agentDir });
+      resetSubagentModelProfileField({ agentName, field: 'effort', scope, cwd: input.cwd, agentDir: input.agentDir });
     }
   }
-  return `Saved subagent model profiles to ${globalSubagentsConfigPath(input.agentDir)}.`;
+  const targets = [...touched];
+  return targets.length > 1
+    ? `Saved subagent model profiles to ${targets.join(' and ')}.`
+    : `Saved subagent model profiles to ${targets[0] ?? globalPath}.`;
 }
 
 export function buildNoChangesModelProfilesMessage(agentDir?: string): string {
@@ -188,6 +203,7 @@ type ModalInput = {
   rows: ModelProfileRow[];
   availableModels?: any[];
   tui?: { requestRender?: () => void };
+  theme?: any;
   done: (result: SubagentModelProfilesModalResult) => void;
 };
 
@@ -322,6 +338,9 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
   };
 
   const rowKey = (row: ModelProfileRow): string => row.name.trim().toLowerCase();
+  const rowScope = (row: ModelProfileRow): SubagentDefinitionScope => row.scope ?? 'global';
+  const dim = (text: string): string => input.theme?.fg?.('dim', text) ?? text;
+  const scopedName = (row: ModelProfileRow): string => `${row.name} ${dim(rowScope(row) === 'project' ? '(local)' : '(global)')}`;
   const hasDirtyProfileFor = (row: ModelProfileRow): boolean => Object.prototype.hasOwnProperty.call(dirtyProfiles, rowKey(row));
   const dirtyProfileFor = (row: ModelProfileRow): SubagentModelProfile | undefined => dirtyProfiles[rowKey(row)];
 
@@ -351,16 +370,16 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
   const rowListLines = (width: number): string[] => {
     const innerWidth = Math.max(1, Math.floor(width || 1) - 2);
     const visibleRows = rows.slice(scrollOffset, scrollOffset + 10);
-    if (innerWidth >= 92) {
-      const nameWidth = 24;
-      const effortWidth = 22;
-      const modelWidth = Math.max(18, innerWidth - nameWidth - effortWidth - 6);
+    if (innerWidth >= 100) {
+      const nameWidth = 32;
+      const effortWidth = 24;
+      const modelWidth = Math.max(24, innerWidth - nameWidth - effortWidth - 6);
       const lines = [`${padToVisibleWidth('agent/phase', nameWidth)}  ${padToVisibleWidth('model', modelWidth)}  ${padToVisibleWidth('effort', effortWidth)}`];
       for (const [offset, item] of visibleRows.entries()) {
         const index = scrollOffset + offset;
         const marker = index === selectedIndex ? '›' : ' ';
         const dirty = hasDirtyProfileFor(item) ? '*' : ' ';
-        lines.push(`${marker} ${dirty} ${padToVisibleWidth(item.name, nameWidth - 4)}  ${padToVisibleWidth(rowModelText(item), modelWidth)}  ${padToVisibleWidth(rowEffortText(item), effortWidth)}`);
+        lines.push(`${marker} ${dirty} ${padToVisibleWidth(scopedName(item), nameWidth - 4)}  ${padToVisibleWidth(rowModelText(item), modelWidth)}  ${padToVisibleWidth(rowEffortText(item), effortWidth)}`);
       }
       return lines;
     }
@@ -369,7 +388,7 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
       const index = scrollOffset + offset;
       const marker = index === selectedIndex ? '›' : ' ';
       const dirty = hasDirtyProfileFor(item) ? '*' : ' ';
-      lines.push(`${marker} ${dirty} ${item.name} · ${rowModelText(item)} · ${rowEffortText(item)}`);
+      lines.push(`${marker} ${dirty} ${scopedName(item)} · ${rowModelText(item)} · ${rowEffortText(item)}`);
     }
     return lines;
   };
@@ -377,7 +396,7 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
   const renderMain = (width: number): string[] => {
     const dirtyCount = Object.keys(dirtyProfiles).length;
     const body = [
-      `target: global · ${pendingLabel(dirtyCount)}`,
+      `target: local/global by subagent scope · ${pendingLabel(dirtyCount)}`,
       '↑/↓/j/k move · enter/m model · e effort · M/E/r reset · s save · esc/q cancel',
       '',
       ...rowListLines(width),
@@ -513,7 +532,8 @@ export function buildNonTuiModelProfilesMessage(agentDir?: string): string {
 }
 
 function rowChoice(row: ModelProfileRow): string {
-  return `${row.name} — model ${row.modelLabel}; effort ${row.effortLabel}`;
+  const scope = row.scope === 'project' ? 'local' : 'global';
+  return `${row.name} (${scope}) — model ${row.modelLabel}; effort ${row.effortLabel}`;
 }
 
 async function getAvailableModels(ctx: any): Promise<any[]> {
@@ -525,9 +545,9 @@ async function getAvailableModels(ctx: any): Promise<any[]> {
   }
 }
 
-async function chooseSave(ctx: any, stagedProfiles: SubagentModelProfiles, agentDir?: string): Promise<string> {
+async function chooseSave(ctx: any, stagedProfiles: SubagentModelProfiles, input: { agentDir?: string; cwd?: string; profileScopes?: Record<string, SubagentDefinitionScope> } = {}): Promise<string> {
   const decision = await ctx.ui.select('Save subagent model profile changes?', ['Save', 'Cancel']);
-  const message = commitStagedModelProfiles({ stagedProfiles, save: decision === 'Save', agentDir });
+  const message = commitStagedModelProfiles({ stagedProfiles, save: decision === 'Save', agentDir: input.agentDir, cwd: input.cwd, profileScopes: input.profileScopes });
   ctx.ui.notify?.(message, decision === 'Save' ? 'info' : 'warning');
   return message;
 }
@@ -543,22 +563,24 @@ export async function runSubagentModelsCommand(ctx: any = {}): Promise<string> {
   const config = readSubagentsConfig(cwd);
   const availableModels = await getAvailableModels(ctx);
   const rows = buildModelProfileRows({ definitions, config, ctx, availableModels });
+  const profileScopes: Record<string, SubagentDefinitionScope> = Object.fromEntries(rows.map((row) => [row.name.trim().toLowerCase(), row.scope ?? 'global']));
 
   if (hasCustomUi) {
     const result = await ctx.ui.custom(
-      (tui: any, _theme: any, _keybindings: any, done: (result: SubagentModelProfilesModalResult) => void) => createSubagentModelProfilesModal({
+      (tui: any, theme: any, _keybindings: any, done: (result: SubagentModelProfilesModalResult) => void) => createSubagentModelProfilesModal({
         rows,
         availableModels,
         tui,
+        theme,
         done,
       }),
-      { overlay: true, overlayOptions: { anchor: 'center', width: '90%', maxHeight: '85%', minWidth: 74 } },
+      { overlay: true, overlayOptions: { anchor: 'center', width: '96%', maxHeight: '90%', minWidth: 96 } },
     ) as SubagentModelProfilesModalResult | undefined;
 
     if (result?.action === 'save') {
       const hasDirtyRows = Object.keys(result.dirtyProfiles).length > 0;
       const message = hasDirtyRows
-        ? commitStagedModelProfiles({ stagedProfiles: result.dirtyProfiles, save: true, agentDir })
+        ? commitStagedModelProfiles({ stagedProfiles: result.dirtyProfiles, save: true, agentDir, cwd, profileScopes })
         : buildNoChangesModelProfilesMessage(agentDir);
       ctx.ui.notify?.(message, 'info');
       return message;
@@ -605,5 +627,5 @@ export async function runSubagentModelsCommand(ctx: any = {}): Promise<string> {
     else staged = stageModelProfileEdit(staged, { agentName: row.name, effort });
   }
 
-  return chooseSave(ctx, staged, agentDir);
+  return chooseSave(ctx, staged, { agentDir, cwd, profileScopes });
 }

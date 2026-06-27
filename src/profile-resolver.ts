@@ -25,8 +25,13 @@ function field<T>(source: ProfileValueSource, value: T | undefined, format: (val
   return { value, source, label: profileSourceLabel(source, value, format) };
 }
 
+function profileForDefinition(definition: SubagentDefinition, config: SubagentsConfig) {
+  if (definition.scope === 'project') return config.project_model_profiles?.[definition.name] ?? (config.project_model_profiles ? undefined : config.model_profiles[definition.name]);
+  return config.global_model_profiles?.[definition.name] ?? (config.global_model_profiles ? undefined : config.model_profiles[definition.name]);
+}
+
 function resolveModel(definition: SubagentDefinition, config: SubagentsConfig, ctx: any): ResolvedProfileField<ModelRef> {
-  const profile = config.model_profiles[definition.name];
+  const profile = profileForDefinition(definition, config);
   if (profile?.model) return field('profile', profile.model, modelLabel);
   if (definition.model) return field('definition', definition.model, modelLabel);
   if (config.default_model) return field('default', config.default_model, modelLabel);
@@ -36,7 +41,7 @@ function resolveModel(definition: SubagentDefinition, config: SubagentsConfig, c
 }
 
 function resolveEffort(definition: SubagentDefinition, config: SubagentsConfig, ctx: any): ResolvedProfileField<ThinkingEffort> {
-  const profile = config.model_profiles[definition.name];
+  const profile = profileForDefinition(definition, config);
   if (profile?.effort) return field('profile', profile.effort, String);
   if (definition.effort) return field('definition', definition.effort, String);
   if (config.default_effort) return field('default', config.default_effort, String);

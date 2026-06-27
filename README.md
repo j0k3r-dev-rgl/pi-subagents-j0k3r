@@ -131,7 +131,7 @@ Config files:
 .pi/subagents.json              # project
 ```
 
-Config resolves as a cascade: project `.pi/subagents.json` overrides global `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. `model_profiles` are the explicit exception: per-agent model/effort routing is read only from the global `~/.pi/agent/subagents.json` or `$PI_CODING_AGENT_DIR/subagents.json`, and project-local `model_profiles` are ignored.
+Config resolves as a cascade: project `.pi/subagents.json` overrides global `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. `model_profiles` are scoped to the definition source: project-local definitions use `.pi/subagents.json`, while global definitions use the global `subagents.json`. If a project definition overrides a global definition with the same name, the project definition and its project-local profile win.
 
 Example:
 
@@ -172,7 +172,7 @@ Example:
 |---|---:|---|
 | `default_model` | current orchestrator model | Fallback model for all subagents. Format: `provider/model-id`. |
 | `default_effort` | current orchestrator effort | Fallback thinking effort. Also accepts `default_thinking_level` or `thinkingLevel`. |
-| `model_profiles` | `{}` | Global-only per-agent model/effort overrides. Project-local `.pi/subagents.json` `model_profiles` are ignored. |
+| `model_profiles` | `{}` | Per-agent model/effort overrides scoped to matching definitions. Project-local profiles apply to project-local definitions; global profiles apply to global definitions. |
 | `timeout_ms` | `600000` | Total timeout per subagent task. |
 | `stall_timeout_ms` | `120000` | Inactivity timeout for a subagent session. |
 | `max_concurrency` | `5` | Max concurrent subagent tasks per cwd/config pair. |
@@ -204,7 +204,7 @@ any tool starting with subagent_
 
 Effective model resolution order:
 
-1. `model_profiles[agent].model`
+1. `model_profiles[agent].model` from the config matching the selected definition scope: project-local for project definitions, global for global definitions
 2. subagent frontmatter `model`
 3. `default_model`
 4. current orchestrator model
@@ -212,7 +212,7 @@ Effective model resolution order:
 
 Effective effort resolution order:
 
-1. `model_profiles[agent].effort`
+1. `model_profiles[agent].effort` from the config matching the selected definition scope: project-local for project definitions, global for global definitions
 2. subagent frontmatter `effort` / `thinking_level` / `thinkingLevel`
 3. `default_effort`
 4. current orchestrator thinking level
@@ -286,20 +286,14 @@ Behavior:
 | Entry point | Description |
 |---|---|
 | `/subagents` | Open the session-focused TUI subagent history panel. |
-| `/subagent-models` | Configure global subagent and SDD phase model profiles. |
+| `/subagent-models` | Configure subagent and SDD phase model profiles in the matching local or global config. |
 | `ctrl+,` | Open the TUI subagent history panel in OpenCode mode by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
 | `x` | Cancel the currently selected queued/running subagent from the open history/detail panel by default. Configurable via `detail_cancel_shortcut` in `subagents.json`. |
 | `ctrl+h` | Send the running Claude-mode subagent task to the background by default. Configurable via `background_handoff_shortcut` in `subagents.json`. |
 
-`/subagent-models` writes global profile changes to:
+`/subagent-models` writes profile changes to the config that matches each selected definition: project-local subagents write to `.pi/subagents.json`, while global subagents and synthetic SDD phase rows write to `~/.pi/agent/subagents.json` or `$PI_CODING_AGENT_DIR/subagents.json` when `PI_CODING_AGENT_DIR` is set.
 
-```txt
-~/.pi/agent/subagents.json
-```
-
-or `$PI_CODING_AGENT_DIR/subagents.json` when `PI_CODING_AGENT_DIR` is set.
-
-In non-TUI environments, edit `model_profiles` manually in that JSON file.
+In non-TUI environments, edit `model_profiles` manually in the matching local or global JSON file.
 
 ## Task history
 

@@ -12,6 +12,7 @@ export type SubagentModelProfile = {
 };
 
 export type SubagentModelProfiles = Record<string, SubagentModelProfile>;
+export type SubagentDefinitionScope = 'global' | 'project';
 
 export type ProfileValueSource = 'profile' | 'definition' | 'default' | 'orchestrator' | 'unresolved';
 
@@ -35,6 +36,7 @@ export type SubagentDefinition = {
   model?: ModelRef;
   effort?: ThinkingEffort;
   tools: string[];
+  scope?: SubagentDefinitionScope;
 };
 
 export type SubagentSessionResources = 'full' | 'lean';
@@ -44,6 +46,8 @@ export type SubagentsConfig = {
   default_model?: ModelRef;
   default_effort?: ThinkingEffort;
   model_profiles: SubagentModelProfiles;
+  global_model_profiles?: SubagentModelProfiles;
+  project_model_profiles?: SubagentModelProfiles;
   timeout_ms: number;
   stall_timeout_ms: number;
   max_concurrency: number;
