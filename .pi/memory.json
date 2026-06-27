@@ -4,9 +4,6 @@
 	"aliases": [],
 	"default_scope": "project",
 	"debug": false,
-	"session_end": {
-		"semantic": false
-	},
 	"import": {
 		"mode": "merge",
 		"on_conflict": "keep_local"
@@ -20,7 +17,7 @@
 		"enabled": false
 	},
 	"git": {
-		"enabled": false,
+		"enabled": true,
 		"sync": {
 			"cloud": false,
 			"export": false,

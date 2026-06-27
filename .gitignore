@@ -2,3 +2,5 @@ node_modules/
 dist/
 .pi/subagents.json
 .pi/subagents-debug.log
+.pi/skill-registry.json
+.pi/skill-registry.md
