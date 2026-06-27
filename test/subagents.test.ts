@@ -1003,6 +1003,38 @@ describe('subagents extension', () => {
     expect(body()).toContain('first line 000');
   });
 
+  it('keeps the selected execution visible and yellow in the horizontal task strip while navigating', () => {
+    const tasks: SubagentTask[] = Array.from({ length: 12 }, (_, i) => ({
+      id: `subtask_visible_selection_${i + 1}`,
+      agent: `agent-${String(i + 1).padStart(2, '0')}`,
+      mode: 'task',
+      status: 'completed',
+      task: `task ${i + 1}`,
+      created_at: new Date().toISOString(),
+      thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status' as const, text: `body ${i + 1}` }] },
+    }));
+    const warningSelections: string[] = [];
+    const theme = {
+      fg: (name: string, text: string) => {
+        if (name === 'warning') warningSelections.push(text);
+        return `<${name}>${text}</${name}>`;
+      },
+      bold: (text: string) => text,
+    };
+    const matcher = (data: string, key: string) => key === 'right' && data === 'right';
+    const panel = new SubagentsHistoryPanel(tasks, theme, () => undefined, matcher, (text) => text.replace(/<[^>]+>/g, '').length, (text, width) => text.length > width ? text.slice(0, width) : text, {}, 24);
+
+    for (let i = 0; i < 9; i++) panel.handleInput('right');
+    const rendered = panel.render(130).join('\n');
+
+    expect(rendered).toContain('/12');
+    expect(rendered).toContain('○ agent-09:completed');
+    expect(rendered).toContain('● agent-10:completed');
+    expect(rendered).toContain('○ agent-11:completed');
+    expect(rendered).not.toContain('○ agent-01:completed');
+    expect(warningSelections.some((text) => text.includes('● agent-10:completed'))).toBe(true);
+  });
+
   it('preserves panel chrome while rendering selected thread snapshots', () => {
     const task: SubagentTask = {
       id: 'subtask_thread_2',

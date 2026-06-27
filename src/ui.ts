@@ -214,15 +214,37 @@ export class SubagentsHistoryPanel {
 
   private taskStrip(width: number): string {
     const tasks = this.tasks();
-    const max = Math.max(1, Math.min(tasks.length, 8));
-    const start = Math.min(Math.max(0, this.selected - Math.floor(max / 2)), Math.max(0, tasks.length - max));
-    const chips: string[] = [];
-    for (let i = start; i < Math.min(tasks.length, start + max); i++) {
-      const task = tasks[i]!;
-      const label = `${i === this.selected ? '●' : '○'} ${task.agent}:${task.status}${task.effort ? ` effort:${task.effort}` : ''}`;
-      chips.push(i === this.selected ? (this.theme?.fg?.('accent', label) ?? label) : (this.theme?.fg?.('dim', label) ?? label));
+    const dim = (s: string) => this.theme?.fg?.('dim', s) ?? s;
+    const selected = (s: string) => this.theme?.fg?.('warning', s) ?? s;
+    const chip = (index: number): { raw: string; styled: string } => {
+      const task = tasks[index]!;
+      const raw = `${index === this.selected ? '●' : '○'} ${task.agent}:${task.status}${task.effort ? ` effort:${task.effort}` : ''}`;
+      return { raw, styled: index === this.selected ? selected(raw) : dim(raw) };
+    };
+    const selectedChip = chip(this.selected);
+    let start = this.selected;
+    let end = this.selected + 1;
+    let raw = selectedChip.raw;
+    while (start > 0 || end < tasks.length) {
+      const preferLeft = this.selected - start <= end - this.selected - 1;
+      const nextIndex = preferLeft && start > 0 ? start - 1 : end < tasks.length ? end : start > 0 ? start - 1 : -1;
+      if (nextIndex < 0) break;
+      const next = chip(nextIndex).raw;
+      const candidate = nextIndex < start ? `${next}  ${raw}` : `${raw}  ${next}`;
+      const prefix = `executions ${Math.min(start, nextIndex) + 1}-${Math.max(end, nextIndex + 1)}/${tasks.length}  `;
+      const leftIndicator = Math.min(start, nextIndex) > 0 ? '‹ ' : '';
+      const rightIndicator = Math.max(end, nextIndex + 1) < tasks.length ? ' ›' : '';
+      if (this.visibleWidth(`${prefix}${leftIndicator}${candidate}${rightIndicator}`) > width) break;
+      raw = candidate;
+      start = Math.min(start, nextIndex);
+      end = Math.max(end, nextIndex + 1);
     }
-    return this.truncateToWidth(chips.join('  '), width);
+    const styledChips: string[] = [];
+    for (let i = start; i < end; i++) styledChips.push(chip(i).styled);
+    const prefix = dim(`executions ${start + 1}-${end}/${tasks.length}`);
+    const leftIndicator = start > 0 ? `${dim('‹')} ` : '';
+    const rightIndicator = end < tasks.length ? ` ${dim('›')}` : '';
+    return `${prefix}  ${leftIndicator}${styledChips.join('  ')}${rightIndicator}`;
   }
 
   private tasks(): SubagentTask[] {
