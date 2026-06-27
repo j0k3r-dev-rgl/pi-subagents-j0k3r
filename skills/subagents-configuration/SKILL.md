@@ -77,7 +77,7 @@ Field conventions:
 
 ## Activation Contract
 
-Use this skill only when the user asks how to configure Pi Subagents or when editing/reviewing subagent configuration files: markdown subagent definitions and project/global `subagents.json`. Cover model profiles, allowed tools, history settings, background task config, background handoff shortcuts, lean resources, and generic interaction handoff as configuration topics only.
+Use this skill only when the user asks how to configure Pi Subagents or when editing/reviewing subagent configuration files: package installation/update settings, markdown subagent definitions, project/global `subagents.json`, model profiles, allowed tools, history settings, background task config, background handoff shortcuts, lean resources, runtime task/background behavior, and generic interaction handoff as configuration topics only.
 
 Do not load this skill for ordinary subagent delegation/use (`subagent_run`, task status/result polling), extension implementation work, task history browsing, or editing this skill file; those are not configuration questions.
 
@@ -92,11 +92,24 @@ Do not load this skill for ordinary subagent delegation/use (`subagent_run`, tas
 - Project definitions override global definitions with the same normalized name.
 - Subagents config resolves as a cascade: project `.pi/subagents.json` overrides global `$PI_CODING_AGENT_DIR/subagents.json` or `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. Communicate this precedence to users when explaining config behavior.
 - `model_profiles` are deep-merged by agent name with project-local profile fields taking precedence over global profile fields.
+- Prefer configuring subagent `model` and `effort` in global or project `subagents.json` under `model_profiles`, not in the subagent markdown frontmatter. Markdown definitions should usually contain identity, description, tool allowlist, and behavioral instructions only.
 - Nested subagent sessions should use `session_resources: "lean"` by default so the subagent markdown body becomes the nested session system prompt, the delegated user prompt contains only orchestrator context/task, and workflow skills, prompt templates, themes, context files, and startup context injections are not auto-loaded.
 - In lean mode, extensions are loaded for allowlisted tools and tool-safety hooks only; prompt/context lifecycle hooks such as `before_agent_start` and `context` must not inject hidden messages into subagent turns.
 - Subagent task history is stored globally under data storage, but rows remain project-scoped by `cwd`; history stores delegated prompt and subagent system prompt separately.
 - Debug logging is disabled by default with `debug: false`; when enabled in global or project `subagents.json`, logs are written to the executing project's `cwd/.pi/subagents-debug.log`.
-- After changing subagent markdown/config or extension code, tell the user to `/reload` or restart Pi.
+- To install the published package globally, prefer `pi install npm:pi-subagents-j0k3r`. If the user wants future `pi update --extensions` / `pi update --all` to move to newer releases, keep the package source unpinned as `npm:pi-subagents-j0k3r` in `~/.pi/agent/settings.json`. Use `npm:pi-subagents-j0k3r@x.y.z` only when the user explicitly wants a fixed version.
+- Runtime behavior to explain: `mode=task` waits and returns the full subagent response to the orchestrator; `mode=background` frees the chat, should not be polled just to wait, and sends an automatic completion/failure notification. `/subagents` opens the session history/detail panel; `ctrl+o` expands/collapses rendered tool output and responses; `subagent_result` reads a stored result when explicitly needed.
+- After changing subagent markdown/config, package settings, or extension code, tell the user to `/reload` or restart Pi.
+
+Recommended global package setting in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": [
+    "npm:pi-subagents-j0k3r"
+  ]
+}
+```
 
 Recommended `subagents.json` starter:
 
@@ -131,14 +144,32 @@ description: investigates isolated ideas, code, documentation, and context7 befo
 tools:
   - read
   - memory_search
-model: anthropic/claude-sonnet-4-5
-effort: low
 ---
 
 # Discovery Subagent
 
 Instructions...
 ```
+
+Configure routing separately in `subagents.json` when needed. If no profile/default is configured, the subagent inherits the current orchestrator model and thinking effort.
+
+```json
+{
+  "model_profiles": {
+    "discovery": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "effort": "low"
+    }
+  }
+}
+```
+
+Model/effort resolution order:
+
+1. `model_profiles[agentName]` in `subagents.json`.
+2. Markdown frontmatter `model` / `effort` only for explicit per-file overrides.
+3. `default_model` / `default_effort` in `subagents.json`.
+4. Current orchestrator model / effort.
 
 ## Decision Gates
 
@@ -149,18 +180,20 @@ Instructions...
 
 ## Execution Steps
 
-1. Identify target scope: global subagent, project subagent, global config, or project config, and explain the cascade when relevant: project-local config first, then global config for missing fields, then built-in defaults.
-2. Read existing subagent markdown/config before editing.
-3. For new subagents, choose lowercase kebab-case names and clear trigger-focused descriptions.
-4. Set minimal tool allowlists; remove any `subagent_*` entries.
-5. Configure `model_profiles`, `default_model`, and `default_effort` only when the user wants explicit routing.
-6. Configure `debug: true` only for temporary diagnostics; keep `debug: false` by default and remember logs are written under the executing project's `.pi` directory.
-7. Validate JSON syntax for `subagents.json` and frontmatter/body structure for markdown agents.
-8. When configuring OpenCode-mode history opening, prefer `history_panel_shortcut` with `ctrl+<letter>` or `ctrl+,` values and document any built-in shortcut conflicts.
-9. When configuring history/detail cancellation, prefer `detail_cancel_shortcut` with `x` by default; it supports `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter. It only cancels the selected queued/running task while the detail panel is active.
-10. When configuring Claude-mode background handoff, prefer `background_handoff_shortcut` with `ctrl+<letter>` values and document any built-in shortcut conflicts.
-11. Tell the user to `/reload` or restart Pi.
-12. If validating configuration after reload, use `subagent_list_agents` only when the user asks for runtime verification; do not run delegated tasks just to validate configuration.
+1. Identify target scope: npm package install/update, global subagent, project subagent, global config, or project config, and explain the cascade when relevant: project-local config first, then global config for missing fields, then built-in defaults.
+2. For package setup, inspect settings before editing; use `pi install npm:pi-subagents-j0k3r` when possible, or edit `~/.pi/agent/settings.json` only when the CLI is unavailable/broken. Prefer unpinned `npm:pi-subagents-j0k3r` unless the user asks for a fixed version.
+3. Read existing subagent markdown/config before editing.
+4. For new subagents, choose lowercase kebab-case names and clear trigger-focused descriptions.
+5. Set minimal tool allowlists; remove any `subagent_*` entries.
+6. Configure `model_profiles`, `default_model`, and `default_effort` in `subagents.json` only when the user wants explicit routing; do not put model routing in subagent markdown unless the user explicitly asks for per-file overrides. Explain that unconfigured fields inherit from the orchestrator.
+7. Configure `debug: true` only for temporary diagnostics; keep `debug: false` by default and remember logs are written under the executing project's `.pi` directory.
+8. Validate JSON syntax for settings/subagents config and frontmatter/body structure for markdown agents.
+9. When configuring OpenCode-mode history opening, prefer `history_panel_shortcut` with `ctrl+<letter>` or `ctrl+,` values and document any built-in shortcut conflicts.
+10. When configuring history/detail cancellation, prefer `detail_cancel_shortcut` with `x` by default; it supports `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter. It only cancels the selected queued/running task while the detail panel is active.
+11. When configuring Claude-mode background handoff, prefer `background_handoff_shortcut` with `ctrl+<letter>` values and document any built-in shortcut conflicts.
+12. Explain runtime behavior when relevant: use `mode=task` to wait; use `mode=background` to keep chat usable and wait for automatic notification; use `/subagents` and `ctrl+o` for detail/expanded rendering.
+13. Tell the user to `/reload` or restart Pi.
+14. If validating configuration after reload, use `subagent_list_agents` only when the user asks for runtime verification; do not run delegated tasks just to validate configuration.
 
 ## Output Contract
 
@@ -168,8 +201,9 @@ Return:
 
 - Skill applied: `subagents-configuration`.
 - Scope/path configured or reviewed.
-- Subagents/config fields added, changed, or preserved.
-- Tool allowlist, system-prompt isolation, Context7 scope, memory-tool scope, debug logging, and model/effort decisions.
+- Package settings and subagents/config fields added, changed, or preserved.
+- Tool allowlist, system-prompt isolation, Context7 scope, memory-tool scope, debug logging, model/effort decisions, and inheritance behavior.
+- Runtime behavior explained when relevant: task vs background, automatic notifications, `/subagents`, `ctrl+o`, and `subagent_result`.
 - Related configuration skills considered or loaded.
 - Validation executed, or the concrete reason it was not run.
 - Required reload/restart note and open risks.

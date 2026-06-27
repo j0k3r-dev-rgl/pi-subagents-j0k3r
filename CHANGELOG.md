@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 - 2026-06-27
+
+### Fixed
+- Expanded Subagents configuration guidance so agents can explain npm installation/update setup, model/effort inheritance, and task/background runtime behavior.
+- Clarified that subagent model and effort routing should live in `subagents.json` `model_profiles` by default, with unconfigured agents inheriting the orchestrator model and effort.
+
 ## 1.0.0 - 2026-06-27
 
 ### Added
