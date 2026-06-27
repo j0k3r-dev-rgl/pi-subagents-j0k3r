@@ -74,6 +74,8 @@ Load order:
 
 Project definitions override global definitions with the same normalized name. Within the same scope, `subagents` definitions override `agents` definitions with the same normalized name and Pi shows a startup warning so the duplicate can be cleaned up.
 
+The npm package is the extension runtime only. It does not ship or load subagent definitions from `node_modules/pi-subagents-j0k3r/agents`; use the directories above, or run `subagent_list_agents` / `subagent({ action: "list" })` to inspect the definitions Pi actually loaded.
+
 Default global agent directory:
 
 ```txt
@@ -394,7 +396,7 @@ This package bundles:
 - `index.ts` and `src/**` — the Pi extension runtime.
 - `skills/subagents-configuration/SKILL.md` — configuration guidance for agents that need to create or edit subagent definitions.
 
-Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`.
+Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`. Do not inspect `node_modules/pi-subagents-j0k3r/agents` for definitions; that path is not part of the package design and may not exist.
 
 ## Development
 
