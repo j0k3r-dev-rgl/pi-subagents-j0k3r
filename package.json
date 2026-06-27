@@ -29,7 +29,8 @@
     "scripts/verify-package-files.mjs",
     ".releaserc.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [
