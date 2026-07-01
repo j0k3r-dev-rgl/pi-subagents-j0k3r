@@ -357,7 +357,8 @@ export function registerSubagentTools(pi: any, manager: SubagentManager): void {
         if (cancelledByDoubleEscape) throw new Error('Subagent run cancelled by double escape');
         if (!('results' in result)) {
           const details = compactResultDetails(result as any);
-          return ok(backgroundLaunchContent(result.task_ids, 'Sent'), details);
+          const response = ok(backgroundLaunchContent(result.task_ids, 'Sent'), details);
+          return isBackground ? response : { ...response, terminate: true };
         }
         const failedTasks = (result.results ?? []).filter((task) => task.status === 'failed' || task.status === 'cancelled');
         const text = result.mode === 'background'

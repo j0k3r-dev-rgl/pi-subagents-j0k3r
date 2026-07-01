@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, completionMessage, createSubagentsPanelKeyMatcher, moveClaudeBackgroundWidgetSelection, renderClaudeBackgroundWidgetLines, resolveRegisteredToolDefinition } from '../index.js';
+import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, completionMessage, createSubagentsPanelKeyMatcher, moveClaudeBackgroundWidgetSelection, renderClaudeBackgroundWidgetLines, resolveRegisteredToolDefinition, sendSubagentCompletionMessage } from '../index.js';
 import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile, subagentSourceWarnings } from '../src/config.js';
 import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
@@ -1243,6 +1243,24 @@ describe('subagents extension', () => {
 
     const expanded = stripAnsi(renderer(message, { expanded: true }, { fg: (_name: string, text: string) => text }).render(120).join('\n'));
     expect(expanded).toContain('background final response to=functions.memory_get');
+  });
+
+  it('delivers background completion messages without triggering or waiting for a follow-up turn', () => {
+    const sendMessage = vi.fn();
+    const task = {
+      id: 'subtask_notify_1',
+      agent: 'analyst',
+      status: 'completed',
+      mode: 'background',
+      result: 'done while main agent continues',
+      model: 'mock/model',
+      effort: 'high',
+    };
+
+    sendSubagentCompletionMessage({ sendMessage }, task);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: 'steer' });
   });
 
   it('renders background completion messages with a distinct themed block background', () => {
@@ -3087,6 +3105,7 @@ describe('subagents extension', () => {
     expect(text).toContain('Do not call subagent_status or subagent_result just to wait');
     expect(text).toContain('The subagent will notify this chat automatically when it finishes');
     expect(text).toContain('Keep the chat available so the user can continue asking questions');
+    expect(result.terminate).not.toBe(true);
   });
 
   it('returns a background handoff result when ctrl+h shortcut is triggered in claude task mode', async () => {
@@ -3125,6 +3144,7 @@ describe('subagents extension', () => {
     const result = await resultPromise;
     const text = result.content[0].text;
     expect(result.isError).not.toBe(true);
+    expect(result.terminate).toBe(true);
     expect(notifications.some((message) => message.includes('Sent subagent to background:'))).toBe(true);
     expect(text).toContain('Sent 1 subagent task(s) to background');
     const taskId = text.match(/subtask_[^\n]+/)?.[0]!;

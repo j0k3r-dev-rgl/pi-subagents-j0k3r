@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Fixed manual task-mode background handoff so it frees the chat only when the user explicitly sends the running subagent to background.
+- Fixed background completion delivery so notifications arrive while the main agent continues working without triggering an extra follow-up turn.
+
 ## 1.1.0 - 2026-06-27
 
 ### Added

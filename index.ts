@@ -290,6 +290,31 @@ export function completionMessage(task: any): string {
   ].join('\n');
 }
 
+export function sendSubagentCompletionMessage(pi: any, task: any): void {
+  pi.sendMessage?.({
+    customType: 'subagent-completion',
+    content: completionMessage(task),
+    display: true,
+    details: {
+      full_result: task.result ?? task.error ?? task.output_preview,
+      task: {
+        id: task.id,
+        agent: task.agent,
+        status: task.status,
+        mode: task.mode,
+        model: task.model,
+        effort: task.effort,
+        usage: task.usage,
+        result: task.result,
+        error: task.error,
+      },
+    },
+  }, {
+    triggerTurn: false,
+    deliverAs: 'steer',
+  });
+}
+
 export function renderSubagentCompletionMessage(message: any, options: any, theme: any) {
   const details = message.details ?? {};
   const task = details.task ?? details;
@@ -336,28 +361,7 @@ export function renderSubagentCompletionMessage(message: any, options: any, them
 export default function subagentsExtension(pi: any): void {
   pi.registerMessageRenderer?.('subagent-completion', renderSubagentCompletionMessage);
   const manager = new SubagentManager(undefined, undefined, (task) => {
-    pi.sendMessage?.({
-      customType: 'subagent-completion',
-      content: completionMessage(task),
-      display: true,
-      details: {
-        full_result: task.result ?? task.error ?? task.output_preview,
-        task: {
-          id: task.id,
-          agent: task.agent,
-          status: task.status,
-          mode: task.mode,
-          model: task.model,
-          effort: task.effort,
-          usage: task.usage,
-          result: task.result,
-          error: task.error,
-        },
-      },
-    }, {
-      triggerTurn: true,
-      deliverAs: 'followUp',
-    });
+    sendSubagentCompletionMessage(pi, task);
   });
   registerSubagentTools(pi, manager);
 
