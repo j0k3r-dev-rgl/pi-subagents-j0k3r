@@ -4,3 +4,4 @@ dist/
 .pi/subagents-debug.log
 .pi/skill-registry.json
 .pi/skill-registry.md
+.pi/workspace-code-graph/
