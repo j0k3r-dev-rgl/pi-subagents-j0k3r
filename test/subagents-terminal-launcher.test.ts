@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { SpawnOptions } from 'node:child_process';
 import {
@@ -22,6 +24,8 @@ function expectFailure(result: LaunchSubagentsTerminalViewerResult): asserts res
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error('expected launcher failure');
 }
+
+const regularFileStat: NonNullable<LaunchSubagentsTerminalViewerOptions['stat']> = () => ({ isFile: () => true });
 
 describe('subagents terminal launcher', () => {
   it('builds Kitty argv as data and keeps shell execution disabled', () => {
@@ -80,6 +84,7 @@ describe('subagents terminal launcher', () => {
       },
       exists: (file) => file === viewerPath || file === kittyPath,
       access: () => undefined,
+      stat: regularFileStat,
       spawn,
     });
 
@@ -123,6 +128,7 @@ describe('subagents terminal launcher', () => {
       env: { PATH: `.${path.delimiter}/usr/bin` },
       exists: (file) => file === viewerPath || file === 'kitty' || file === kittyPath,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: (command, args, options) => {
         spawnCalls.push([command, args, options]);
         return { unref: vi.fn(), once: vi.fn() } as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>;
@@ -145,6 +151,7 @@ describe('subagents terminal launcher', () => {
       env: { PATH: `${path.delimiter}/usr/bin` },
       exists: (file) => file === viewerPath || file === 'kitty' || file === kittyPath,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: (command, args, options) => {
         spawnCalls.push([command, args, options]);
         return { unref: vi.fn(), once: vi.fn() } as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>;
@@ -154,6 +161,73 @@ describe('subagents terminal launcher', () => {
     expect(result).toEqual({ ok: true });
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0]?.[0]).toBe(kittyPath);
+  });
+
+  it('skips executable directories on PATH before resolving Kitty from a regular executable file', async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'pi-kitty-path-'));
+
+    try {
+      const configDirectory = path.join(tempRoot, '.config');
+      const directoryKitty = path.join(configDirectory, 'kitty');
+      const binDirectory = path.join(tempRoot, 'bin');
+      const realKittyPath = path.join(binDirectory, 'kitty');
+      const realViewerPath = path.join(tempRoot, 'subagents-terminal-viewer.mjs');
+      const spawnCalls: Array<[string, string[], SpawnOptions]> = [];
+
+      mkdirSync(directoryKitty, { recursive: true });
+      mkdirSync(binDirectory, { recursive: true });
+      writeFileSync(realKittyPath, '#!/bin/sh\nexit 0\n');
+      chmodSync(realKittyPath, 0o755);
+      writeFileSync(realViewerPath, '');
+
+      const result = await launchSubagentsTerminalViewer({
+        cwd: tempRoot,
+        dbPath,
+        viewerPath: realViewerPath,
+        processExecPath: nodePath,
+        immediateExitMs: 0,
+        env: { PATH: `${configDirectory}${path.delimiter}${binDirectory}` },
+        spawn: (command, args, options) => {
+          spawnCalls.push([command, args, options]);
+          return { unref: vi.fn(), once: vi.fn() } as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>;
+        },
+      });
+
+      expect(result).toEqual({ ok: true });
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]?.[0]).toBe(realKittyPath);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects custom absolute Kitty executable paths that point to directories before spawning', async () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'pi-kitty-custom-'));
+
+    try {
+      const directoryKitty = path.join(tempRoot, 'kitty');
+      const realViewerPath = path.join(tempRoot, 'subagents-terminal-viewer.mjs');
+      const spawn = vi.fn(() => ({ unref: vi.fn(), once: vi.fn() } as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>));
+
+      mkdirSync(directoryKitty, { recursive: true });
+      writeFileSync(realViewerPath, '');
+
+      const result = await launchSubagentsTerminalViewer({
+        cwd: tempRoot,
+        dbPath,
+        viewerPath: realViewerPath,
+        kittyExecutable: directoryKitty,
+        processExecPath: nodePath,
+        immediateExitMs: 0,
+        spawn,
+      });
+
+      expectFailure(result);
+      expect(result).toMatchObject({ reason: 'kitty-unavailable' });
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('rejects relative custom Kitty executable paths before spawning', async () => {
@@ -188,6 +262,7 @@ describe('subagents terminal launcher', () => {
       access: (file) => {
         if (file === kittyPath) throw new Error('not executable');
       },
+      stat: regularFileStat,
       spawn,
     });
 
@@ -225,6 +300,7 @@ describe('subagents terminal launcher', () => {
       immediateExitMs: 0,
       exists: () => true,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: () => { throw new Error('spawn exploded'); },
     });
 
@@ -245,6 +321,7 @@ describe('subagents terminal launcher', () => {
       immediateExitMs: 25,
       exists: () => true,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: (() => child as unknown as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>),
     });
 
@@ -269,6 +346,7 @@ describe('subagents terminal launcher', () => {
       immediateExitMs: 25,
       exists: () => true,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: (() => child as unknown as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>),
     });
 
@@ -293,6 +371,7 @@ describe('subagents terminal launcher', () => {
       immediateExitMs: 0,
       exists: () => true,
       access: () => undefined,
+      stat: regularFileStat,
       spawn: (() => child as unknown as ReturnType<NonNullable<LaunchSubagentsTerminalViewerOptions['spawn']>>),
       onSpawnError,
     });

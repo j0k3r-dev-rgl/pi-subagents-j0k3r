@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync, type Stats } from 'node:fs';
 import path from 'node:path';
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 
@@ -46,6 +46,7 @@ export type BuildSubagentsTerminalViewerArgsOptions = {
 
 type AccessCheck = (file: string, mode?: number) => void;
 type ExistsCheck = (file: string) => boolean;
+type StatCheck = (file: string) => Pick<Stats, 'isFile'>;
 type SpawnChild = Pick<ChildProcess, 'once' | 'unref'> & Partial<Pick<ChildProcess, 'off'>>;
 type SpawnCheck = (command: string, args: string[], options: SpawnOptions) => SpawnChild;
 type SpawnFailureResult = { ok: false; reason: typeof LAUNCH_FAILURE_REASON.SPAWN_FAILED; message: string };
@@ -55,6 +56,7 @@ export type LaunchSubagentsTerminalViewerOptions = BuildSubagentsTerminalViewerA
   env?: NodeJS.ProcessEnv;
   exists?: ExistsCheck;
   access?: AccessCheck;
+  stat?: StatCheck;
   spawn?: SpawnCheck;
   onSpawnError?: (failure: { ok: false; reason: typeof LAUNCH_FAILURE_REASON.SPAWN_FAILED; message: string }) => void;
   immediateExitMs?: number;
@@ -117,20 +119,28 @@ function canAccess(file: string, mode: number, access: AccessCheck): boolean {
   }
 }
 
-function usableAbsoluteExecutable(candidate: string, exists: ExistsCheck, access: AccessCheck): string | undefined {
-  const normalized = path.normalize(candidate);
-  return exists(normalized) && canAccess(normalized, constants.X_OK, access) ? normalized : undefined;
+function isRegularFile(file: string, stat: StatCheck): boolean {
+  try {
+    return stat(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
-function resolveExecutable(command: string, env: NodeJS.ProcessEnv, exists: ExistsCheck, access: AccessCheck): string | undefined {
-  if (path.isAbsolute(command)) return usableAbsoluteExecutable(command, exists, access);
+function usableAbsoluteExecutable(candidate: string, exists: ExistsCheck, access: AccessCheck, stat: StatCheck): string | undefined {
+  const normalized = path.normalize(candidate);
+  return exists(normalized) && isRegularFile(normalized, stat) && canAccess(normalized, constants.X_OK, access) ? normalized : undefined;
+}
+
+function resolveExecutable(command: string, env: NodeJS.ProcessEnv, exists: ExistsCheck, access: AccessCheck, stat: StatCheck): string | undefined {
+  if (path.isAbsolute(command)) return usableAbsoluteExecutable(command, exists, access, stat);
   if (command.includes(path.sep)) return undefined;
 
   const pathValue = env.PATH ?? '';
   for (const directory of pathValue.split(path.delimiter)) {
     if (!directory || !path.isAbsolute(directory)) continue;
     const candidate = path.join(directory, command);
-    const executable = usableAbsoluteExecutable(candidate, exists, access);
+    const executable = usableAbsoluteExecutable(candidate, exists, access, stat);
     if (executable) return executable;
   }
   return undefined;
@@ -170,6 +180,7 @@ export function buildSubagentsTerminalViewerArgs(options: BuildSubagentsTerminal
 export async function launchSubagentsTerminalViewer(options: LaunchSubagentsTerminalViewerOptions): Promise<LaunchSubagentsTerminalViewerResult> {
   const exists = options.exists ?? existsSync;
   const access = options.access ?? accessSync;
+  const stat = options.stat ?? statSync;
   const spawn = options.spawn ?? nodeSpawn;
   const env = options.env ?? process.env;
 
@@ -180,7 +191,7 @@ export async function launchSubagentsTerminalViewer(options: LaunchSubagentsTerm
     );
   }
 
-  const kitty = resolveExecutable(options.kittyExecutable ?? 'kitty', env, exists, access);
+  const kitty = resolveExecutable(options.kittyExecutable ?? 'kitty', env, exists, access, stat);
   if (!kitty) {
     return failure(
       LAUNCH_FAILURE_REASON.KITTY_UNAVAILABLE,
