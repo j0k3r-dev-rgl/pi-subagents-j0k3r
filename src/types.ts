@@ -56,6 +56,7 @@ export type SubagentsConfig = {
   mode?: SubagentUiMode;
   background_handoff_shortcut?: string;
   history_panel_shortcut?: string;
+  terminal_viewer_shortcut?: string;
   detail_cancel_shortcut?: string;
   debug?: boolean;
 };

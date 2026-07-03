@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_STALL_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_BACKGROUND_HANDOFF_SHORTCUT = 'ctrl+h';
 const DEFAULT_HISTORY_PANEL_SHORTCUT = 'ctrl+,';
+const DEFAULT_TERMINAL_VIEWER_SHORTCUT = 'ctrl+shift+,';
 const DEFAULT_DETAIL_CANCEL_SHORTCUT = 'x';
 const BLOCKED_SUBAGENT_TOOLS = new Set([
   'subagent_run',
@@ -122,6 +123,11 @@ function parseCtrlShortcut(value: any, fallback: string): string {
   return /^(?:ctrl\+(?:[a-z]|,)|ctrl\+shift\+[a-z])$/.test(shortcut) ? shortcut : fallback;
 }
 
+function parseTerminalViewerShortcut(value: any): string {
+  const shortcut = String(value ?? DEFAULT_TERMINAL_VIEWER_SHORTCUT).trim().toLowerCase();
+  return /^(?:ctrl\+(?:[a-z]|,)|ctrl\+shift\+(?:[a-z]|,))$/.test(shortcut) ? shortcut : DEFAULT_TERMINAL_VIEWER_SHORTCUT;
+}
+
 function parseDetailShortcut(value: any): string {
   const shortcut = String(value ?? DEFAULT_DETAIL_CANCEL_SHORTCUT).trim().toLowerCase();
   if (/^[a-z]$/.test(shortcut)) return shortcut;
@@ -194,6 +200,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     mode: parseMode(raw.mode),
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
     history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
+    terminal_viewer_shortcut: parseTerminalViewerShortcut(raw.terminal_viewer_shortcut ?? raw.terminalViewerShortcut),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
     debug: parseBoolean(raw.debug, false),
   };

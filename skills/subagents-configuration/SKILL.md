@@ -57,6 +57,8 @@ Use this block as the machine-readable source for `.pi/skill-registry.json` gene
       "model profiles configuration",
       "tool allowlist configuration",
       "subagent history configuration",
+      "terminal viewer shortcut",
+      "terminal_viewer_shortcut",
       "background handoff shortcut",
       "background_handoff_shortcut",
       "interaction handoff configuration"
@@ -126,6 +128,7 @@ Recommended `subagents.json` starter:
   "debug": false,
   "session_resources": "lean",
   "history_panel_shortcut": "ctrl+,",
+  "terminal_viewer_shortcut": "ctrl+shift+,",
   "detail_cancel_shortcut": "x",
   "background_handoff_shortcut": "ctrl+h",
   "default_tools": [
@@ -193,11 +196,12 @@ Model/effort resolution order:
 7. Configure `debug: true` only for temporary diagnostics; keep `debug: false` by default and remember logs are written under the executing project's `.pi` directory.
 8. Validate JSON syntax for settings/subagents config and frontmatter/body structure for markdown agents.
 9. When configuring OpenCode-mode history opening, prefer `history_panel_shortcut` with `ctrl+<letter>` or `ctrl+,` values and document any built-in shortcut conflicts.
-10. When configuring history/detail cancellation, prefer `detail_cancel_shortcut` with `x` by default; it supports `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter. It only cancels the selected queued/running task while the detail panel is active.
-11. When configuring Claude-mode background handoff, prefer `background_handoff_shortcut` with `ctrl+<letter>` values and document any built-in shortcut conflicts.
-12. Explain runtime behavior when relevant: use `mode=task` to wait; use `mode=background` to keep chat usable and wait for automatic notification; use `/subagents` and `ctrl+o` for detail/expanded rendering.
-13. Tell the user to `/reload` or restart Pi.
-14. If validating configuration after reload, use `subagent_list_agents` only when the user asks for runtime verification; do not run delegated tasks just to validate configuration.
+10. When configuring the external terminal viewer launcher, prefer `terminal_viewer_shortcut` with `ctrl+shift+,` by default; it supports `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or `ctrl+shift+,` and launches the same path as `/subagents-terminal`.
+11. When configuring history/detail cancellation, prefer `detail_cancel_shortcut` with `x` by default; it supports `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter. It only cancels the selected queued/running task while the detail panel is active.
+12. When configuring Claude-mode background handoff, prefer `background_handoff_shortcut` with `ctrl+<letter>` values and document any built-in shortcut conflicts.
+13. Explain runtime behavior when relevant: use `mode=task` to wait; use `mode=background` to keep chat usable and wait for automatic notification; use `/subagents`, `/subagents-terminal`, and `ctrl+o` for detail/expanded rendering.
+14. Tell the user to `/reload` or restart Pi.
+15. If validating configuration after reload, use `subagent_list_agents` only when the user asks for runtime verification; do not run delegated tasks just to validate configuration.
 
 ## Output Contract
 

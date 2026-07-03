@@ -11,7 +11,7 @@ Pi extension for delegating work to markdown-defined subagents. It registers too
 - Subagent markdown used as system prompt, with delegated task/context as the user prompt.
 - Project-scoped task history in a global SQLite data/cache location.
 - TUI history panel via `/subagents` or `ctrl+,`.
-- Kitty-first external read-only terminal viewer shell via `/subagents-terminal`.
+- Kitty-first external read-only terminal viewer shell via `/subagents-terminal` or `ctrl+shift+,` by default.
 - Claude-mode background handoff via `ctrl+h` by default, configurable in `subagents.json`.
 - TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`.
 - Model profile UI via `/subagent-models`.
@@ -145,6 +145,7 @@ Example:
   "max_concurrency": 5,
   "session_resources": "lean",
   "history_panel_shortcut": "ctrl+,",
+  "terminal_viewer_shortcut": "ctrl+shift+,",
   "detail_cancel_shortcut": "x",
   "background_handoff_shortcut": "ctrl+h",
   "default_tools": [
@@ -179,6 +180,7 @@ Example:
 | `max_concurrency` | `5` | Max concurrent subagent tasks per cwd/config pair. |
 | `session_resources` | `lean` | SDK resource loading mode. `lean` uses the subagent markdown body as the nested session system prompt, skips skills, prompt templates, themes, and context files, and loads extensions in tools-only/safety-hook mode so allowlisted extension tools remain available without startup context injection. Use explicit `full` only when a subagent intentionally needs the full Pi resource set. Also accepts camelCase `sessionResources`. |
 | `history_panel_shortcut` | `ctrl+,` | OpenCode-mode shortcut used to open the subagents history/detail panel. Accepts `ctrl+<letter>` or `ctrl+,` and also accepts camelCase `historyPanelShortcut`. |
+| `terminal_viewer_shortcut` | `ctrl+shift+,` | Shortcut used to launch the same Kitty terminal viewer path as `/subagents-terminal`. Accepts `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or `ctrl+shift+,`, and also accepts camelCase `terminalViewerShortcut`. |
 | `detail_cancel_shortcut` | `x` | Shortcut for the subagents history/detail panel to cancel only the currently selected queued/running subagent. `ctrl+...` values are also registered as a Pi shortcut scoped by the active panel, so they still work when the TUI captures control keys; single-letter values are handled by the panel input. Accepts `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter, and also accepts camelCase `detailCancelShortcut`. It is ignored when the panel is not active or the selected subagent is already finished. |
 | `background_handoff_shortcut` | `ctrl+h` | Claude-mode shortcut used to send a running task to the background. Accepts `ctrl+<letter>` and also accepts camelCase `backgroundHandoffShortcut`. |
 | `default_tools` | see below | Fallback tool allowlist used by the runner when an agent definition has an empty tool list. Omitted frontmatter `tools` uses the built-in default list. |
@@ -290,6 +292,7 @@ Behavior:
 | `/subagents-terminal` | Open a Kitty terminal with the read-only viewer shell; current-session history rendering/querying lands in PR 2/PR 3. |
 | `/subagent-models` | Configure subagent and SDD phase model profiles in the matching local or global config. |
 | `ctrl+,` | Open the TUI subagent history panel in OpenCode mode by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
+| `ctrl+shift+,` | Open the Kitty terminal viewer by default through the same path as `/subagents-terminal`. Configurable via `terminal_viewer_shortcut` in `subagents.json`. |
 | `x` | Cancel the currently selected queued/running subagent from the open history/detail panel by default. Configurable via `detail_cancel_shortcut` in `subagents.json`. |
 | `ctrl+h` | Send the running Claude-mode subagent task to the background by default. Configurable via `background_handoff_shortcut` in `subagents.json`. |
 
@@ -339,7 +342,7 @@ History and debug logging are best-effort: failures to persist them should not b
 
 ### External terminal history viewer
 
-`/subagents-terminal` opens a separate Kitty OS terminal window with a packaged Node viewer (`bin/subagents-terminal-viewer.mjs`). V1 is Kitty-first: if Kitty is missing, exits immediately with a launch failure, or cannot be launched, Pi reports a clear error and the existing `/subagents` panel remains available.
+`/subagents-terminal` or the configured `terminal_viewer_shortcut` (`ctrl+shift+,` by default) opens a separate Kitty OS terminal window with a packaged Node viewer (`bin/subagents-terminal-viewer.mjs`). V1 is Kitty-first: if Kitty is missing, exits immediately with a launch failure, or cannot be launched, Pi reports a clear error and the existing `/subagents` panel remains available.
 
 PR 1 opens the read-only terminal viewer shell/bootstrap only. When Pi can resolve the current session id, the launcher passes `cwd`, history DB path, session id, and refresh interval as separate argv values with `shell: false` and a scrubbed child environment. This PR 1 foundation intentionally uses explicit argv transport; a one-shot config file or fd handoff can be considered later if the chain needs to reduce argv exposure.
 

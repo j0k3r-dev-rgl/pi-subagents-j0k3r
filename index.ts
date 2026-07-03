@@ -494,6 +494,28 @@ export default function subagentsExtension(pi: any): void {
     }
   }
 
+  async function openSubagentsTerminal(ctx: any): Promise<string> {
+    const cwd = typeof ctx?.cwd === 'string' && ctx.cwd ? ctx.cwd : process.cwd();
+    const notify = ctx?.ui?.notify?.bind(ctx.ui);
+    const result = await terminalViewerLauncher({
+      cwd,
+      sessionId: resolveCurrentSessionId(ctx),
+      dbPath: resolveSubagentHistoryDbPath(process.env),
+      viewerPath: SUBAGENTS_TERMINAL_VIEWER_PATH,
+      refreshMs: SUBAGENTS_TERMINAL_REFRESH_MS,
+      onSpawnError: (failure: { message: string }) => notify?.(failure.message, 'error'),
+    });
+
+    if (result.ok) {
+      const message = 'Opened read-only terminal viewer shell in Kitty. PR1 bootstrap is active; current-session history rendering/querying lands in PR2/PR3.';
+      notify?.(message, 'info');
+      return message;
+    }
+
+    notify?.(result.message, 'error');
+    return result.message;
+  }
+
   const historyPanelShortcut = readSubagentsConfig(process.cwd()).history_panel_shortcut ?? 'ctrl+,';
   pi.registerShortcut?.(historyPanelShortcut, {
     description: 'Show subagent history panel',
@@ -525,6 +547,12 @@ export default function subagentsExtension(pi: any): void {
     },
   });
 
+  const terminalViewerShortcut = readSubagentsConfig(process.cwd()).terminal_viewer_shortcut ?? 'ctrl+shift+,';
+  pi.registerShortcut?.(terminalViewerShortcut, {
+    description: 'Open read-only persisted subagent history in a Kitty terminal',
+    handler: async (ctx: any) => openSubagentsTerminal(ctx),
+  });
+
   pi.registerCommand?.('subagents', {
     description: 'Show subagent history panel',
     handler: async (_args: string, ctx: any) => showSubagentsPanel({ ...ctx, pi }),
@@ -537,27 +565,7 @@ export default function subagentsExtension(pi: any): void {
 
   pi.registerCommand?.('subagents-terminal', {
     description: 'Open read-only persisted subagent history in a Kitty terminal',
-    handler: async (_args: string, ctx: any) => {
-      const cwd = typeof ctx?.cwd === 'string' && ctx.cwd ? ctx.cwd : process.cwd();
-      const notify = ctx?.ui?.notify?.bind(ctx.ui);
-      const result = await terminalViewerLauncher({
-        cwd,
-        sessionId: resolveCurrentSessionId(ctx),
-        dbPath: resolveSubagentHistoryDbPath(process.env),
-        viewerPath: SUBAGENTS_TERMINAL_VIEWER_PATH,
-        refreshMs: SUBAGENTS_TERMINAL_REFRESH_MS,
-        onSpawnError: (failure: { message: string }) => notify?.(failure.message, 'error'),
-      });
-
-      if (result.ok) {
-        const message = 'Opened read-only terminal viewer shell in Kitty. PR1 bootstrap is active; current-session history rendering/querying lands in PR2/PR3.';
-        notify?.(message, 'info');
-        return message;
-      }
-
-      notify?.(result.message, 'error');
-      return result.message;
-    },
+    handler: async (_args: string, ctx: any) => openSubagentsTerminal(ctx),
   });
 
 }
