@@ -22,9 +22,13 @@
     "node": ">=22.19.0"
   },
   "main": "./index.ts",
+  "bin": {
+    "subagents-terminal-viewer": "./bin/subagents-terminal-viewer.mjs"
+  },
   "files": [
     "index.ts",
     "src",
+    "bin",
     "skills",
     "scripts/verify-package-files.mjs",
     ".releaserc.json",

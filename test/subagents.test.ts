@@ -9,6 +9,7 @@ import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
 import { applyDirtyProfileEdit, buildModelProfileRows, buildNoChangesModelProfilesMessage, buildNonTuiModelProfilesMessage, commitStagedModelProfiles, createSubagentModelProfilesModal, globalSubagentsConfigPath, groupAvailableModelsByProvider, runSubagentModelsCommand, stageModelProfileEdit } from '../src/model-profiles-ui.js';
 import { resolveSubagentHistoryDbPath, resolveSubagentsHistoryHome, SubagentHistoryStore } from '../src/history.js';
+import { resolveSubagentHistoryDbPath as resolvePureSubagentHistoryDbPath, resolveSubagentsHistoryHome as resolvePureSubagentsHistoryHome } from '../src/history-path.js';
 import { isSubagentsDebugEnabled, writeSubagentsDebugLog } from '../src/debug.js';
 import { SubagentManager } from '../src/manager.js';
 import { registerSubagentTools } from '../src/tools.js';
@@ -1215,8 +1216,100 @@ describe('subagents extension', () => {
     expect(tools).toContain('subagent_list_agents');
     expect(tools).toContain('subagent_status');
     expect(tools).toContain('subagent_result');
-    expect(commands).toEqual(['subagents', 'subagent-models']);
+    expect(commands).toEqual(['subagents', 'subagent-models', 'subagents-terminal']);
     expect(shortcuts).toEqual(['ctrl+,', 'ctrl+h']);
+  });
+
+  it('launches /subagents-terminal with current-session handoff data and user-visible success feedback', async () => {
+    let terminalCommand: any;
+    let launchOptions: any;
+    const launcher = vi.fn((options: any) => {
+      launchOptions = options;
+      return { ok: true };
+    });
+    const notify = vi.fn();
+
+    extension({
+      registerTool: () => undefined,
+      registerShortcut: () => undefined,
+      registerCommand: (name: string, command: any) => { if (name === 'subagents-terminal') terminalCommand = command; },
+      subagentsTerminalLauncher: launcher,
+    });
+
+    const result = await terminalCommand.handler('', {
+      cwd: tmp,
+      sessionManager: { getSessionId: () => 'session-current' },
+      ui: { notify },
+    });
+
+    expect(launcher).toHaveBeenCalledTimes(1);
+    expect(launchOptions.cwd).toBe(tmp);
+    expect(launchOptions.sessionId).toBe('session-current');
+    expect(launchOptions.dbPath).toBe(resolveSubagentHistoryDbPath());
+    expect(path.isAbsolute(launchOptions.viewerPath)).toBe(true);
+    expect(launchOptions.viewerPath).toMatch(/bin\/subagents-terminal-viewer\.mjs$/);
+    expect(result).toContain('Opened read-only terminal viewer shell in Kitty');
+    expect(result).toContain('current-session history rendering/querying lands in PR2/PR3');
+    expect(result).not.toMatch(/displays current-session prompts|transcripts|tool output/i);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('current-session history rendering/querying lands in PR2/PR3'), 'info');
+  });
+
+  it('falls back to ctx.sessionId for /subagents-terminal when getSessionId returns an empty string', async () => {
+    let terminalCommand: any;
+    let launchOptions: any;
+    extension({
+      registerTool: () => undefined,
+      registerShortcut: () => undefined,
+      registerCommand: (name: string, command: any) => { if (name === 'subagents-terminal') terminalCommand = command; },
+      subagentsTerminalLauncher: (options: any) => { launchOptions = options; return { ok: true }; },
+    });
+
+    await terminalCommand.handler('', {
+      cwd: tmp,
+      sessionId: 'session-from-context',
+      sessionManager: { getSessionId: () => '', getSessionFile: () => 'session-from-file' },
+      ui: { notify: vi.fn() },
+    });
+
+    expect(launchOptions.sessionId).toBe('session-from-context');
+    expect(launchOptions.cwd).toBe(tmp);
+  });
+
+  it('hands off /subagents-terminal without a session id as fail-closed no-session scope', async () => {
+    let terminalCommand: any;
+    let launchOptions: any;
+    extension({
+      registerTool: () => undefined,
+      registerShortcut: () => undefined,
+      registerCommand: (name: string, command: any) => { if (name === 'subagents-terminal') terminalCommand = command; },
+      subagentsTerminalLauncher: (options: any) => { launchOptions = options; return { ok: true }; },
+    });
+
+    await terminalCommand.handler('', {
+      cwd: tmp,
+      sessionManager: { getSessionId: () => '', getSessionFile: () => '' },
+      ui: { notify: vi.fn() },
+    });
+
+    expect(launchOptions.sessionId).toBeUndefined();
+    expect(launchOptions.cwd).toBe(tmp);
+    expect(launchOptions.dbPath).toBe(resolveSubagentHistoryDbPath());
+  });
+
+  it('reports /subagents-terminal launch failures through Pi-visible command feedback', async () => {
+    let terminalCommand: any;
+    const notify = vi.fn();
+    extension({
+      registerTool: () => undefined,
+      registerShortcut: () => undefined,
+      registerCommand: (name: string, command: any) => { if (name === 'subagents-terminal') terminalCommand = command; },
+      subagentsTerminalLauncher: () => ({ ok: false, reason: 'kitty-unavailable', message: 'Kitty is required for /subagents-terminal in V1. Install Kitty or use /subagents inside Pi.' }),
+    });
+
+    const result = await terminalCommand.handler('', { cwd: tmp, ui: { notify } });
+
+    expect(result).toContain('Kitty is required');
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('Kitty is required'), 'error');
   });
 
   it('registers a compact/expanded renderer for background subagent completion messages', () => {
@@ -2925,6 +3018,9 @@ describe('subagents extension', () => {
     expect(resolveSubagentHistoryDbPath({ XDG_DATA_HOME: '/xdg' } as any)).toBe(path.join('/xdg', 'pi', 'subagents', 'subagents-history.sqlite'));
     expect(resolveSubagentHistoryDbPath({ PI_SUBAGENTS_HISTORY_DB_PATH: '/custom/history.sqlite' } as any)).toBe('/custom/history.sqlite');
     expect(resolveSubagentsHistoryHome({ PI_SUBAGENTS_HISTORY_HOME: '/custom/home' } as any)).toBe('/custom/home');
+    expect(resolvePureSubagentsHistoryHome({ XDG_DATA_HOME: '/xdg' } as any)).toBe(path.join('/xdg', 'pi', 'subagents'));
+    expect(resolvePureSubagentHistoryDbPath({ PI_SUBAGENTS_HISTORY_DB_PATH: path.join(tmp, 'pure', 'history.sqlite') } as any)).toBe(path.join(tmp, 'pure', 'history.sqlite'));
+    expect(fs.existsSync(path.join(tmp, 'pure'))).toBe(false);
 
     const store = new SubagentHistoryStore();
     const task: SubagentTask = {
@@ -3250,6 +3346,34 @@ describe('subagents extension', () => {
     expect(result.content[0].text).toContain('current session');
     expect(result.details.tasks.map((task: any) => task.task)).toEqual(['current session task']);
     expect(JSON.stringify(result)).not.toContain('other session task');
+  });
+
+  it('uses ctx.sessionId consistently for run and list tools when getSessionId returns an empty string', async () => {
+    writeAgent('analyst');
+    const manager = new SubagentManager(async ({ task }) => ({ result: `handled ${task}`, model: 'mock/model', fallback_used: false }));
+    let runTool: any;
+    let listTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => {
+      if (tool.name === 'subagent_run') runTool = tool;
+      if (tool.name === 'subagent_list_tasks') listTool = tool;
+    } }, manager);
+    const ctx = {
+      cwd: tmp,
+      sessionId: 'session-from-context',
+      sessionManager: { getSessionId: () => '', getSessionFile: () => 'session-from-file' },
+    };
+
+    const runResult = await runTool.execute('1', { agent: 'analyst', task: 'ctx session task', mode: 'task' }, undefined, undefined, ctx);
+    const contextScopedTasks = manager.listSessionTasks(tmp, 'session-from-context');
+    const fileScopedTasks = manager.listSessionTasks(tmp, 'session-from-file');
+    const listResult = await listTool.execute('2', {}, undefined, undefined, ctx);
+
+    expect(runResult.details.results.map((task: any) => task.session_id)).toEqual(['session-from-context']);
+    expect(contextScopedTasks.map((task: any) => task.task)).toEqual(['ctx session task']);
+    expect(fileScopedTasks.map((task: any) => task.task)).toEqual([]);
+    expect(listResult.content[0].text).toContain('Listed 1 subagent task');
+    expect(listResult.details.tasks.map((task: any) => task.session_id)).toEqual(['session-from-context']);
+    expect(JSON.stringify(listResult)).not.toContain('session-from-file');
   });
 
   it('lists subagent tasks as a short collapsed summary with expandable details', async () => {

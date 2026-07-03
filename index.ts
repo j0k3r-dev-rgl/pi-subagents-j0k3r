@@ -1,9 +1,16 @@
+import { fileURLToPath } from 'node:url';
 import { SubagentManager } from './src/manager.js';
 import { readSubagentsConfig, subagentSourceWarnings } from './src/config.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from './src/tools.js';
 import { runSubagentModelsCommand } from './src/model-profiles-ui.js';
+import { resolveSubagentHistoryDbPath } from './src/history-path.js';
+import { resolveCurrentSessionId } from './src/session-id.js';
+import { launchSubagentsTerminalViewer } from './src/terminal-launcher.js';
 import { SubagentsHistoryPanel } from './src/ui.js';
 import type { SubagentTask } from './src/types.js';
+
+const SUBAGENTS_TERMINAL_VIEWER_PATH = fileURLToPath(new URL('./bin/subagents-terminal-viewer.mjs', import.meta.url));
+const SUBAGENTS_TERMINAL_REFRESH_MS = 1000;
 
 type ClaudeBackgroundWidgetEntry = {
   key: string;
@@ -104,13 +111,6 @@ function wrapLineToWidth(line: string, width: number): string[] {
   }
   if (current) out.push(current);
   return out.length ? out : [''];
-}
-
-function currentSessionId(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
 }
 
 function setMouseTracking(tui: any, enabled: boolean): void {
@@ -363,6 +363,7 @@ export default function subagentsExtension(pi: any): void {
   const manager = new SubagentManager(undefined, undefined, (task) => {
     sendSubagentCompletionMessage(pi, task);
   });
+  const terminalViewerLauncher = pi?.subagentsTerminalLauncher ?? launchSubagentsTerminalViewer;
   registerSubagentTools(pi, manager);
 
   let widgetTimer: NodeJS.Timeout | undefined;
@@ -382,7 +383,7 @@ export default function subagentsExtension(pi: any): void {
       ctx.ui.setWidget('subagents-claude-background', undefined);
       return false;
     }
-    const sessionId = currentSessionId(ctx);
+    const sessionId = resolveCurrentSessionId(ctx);
     widgetState = new ClaudeBackgroundWidgetState(
       () => manager.listSessionTasks(cwd, sessionId).slice(0, 100),
       () => widgetRequestRender?.(),
@@ -431,7 +432,7 @@ export default function subagentsExtension(pi: any): void {
 
   async function showSubagentsPanel(ctx: any, selectedTaskId?: string) {
     const cwd = ctx?.cwd ?? process.cwd();
-    const sessionId = currentSessionId(ctx);
+    const sessionId = resolveCurrentSessionId(ctx);
     let refresh: NodeJS.Timeout | undefined;
     widgetInputSuspended = true;
     try {
@@ -532,6 +533,31 @@ export default function subagentsExtension(pi: any): void {
   pi.registerCommand?.('subagent-models', {
     description: 'Configure subagent and SDD phase model profiles',
     handler: async (_args: string, ctx: any) => runSubagentModelsCommand({ ...ctx, pi }),
+  });
+
+  pi.registerCommand?.('subagents-terminal', {
+    description: 'Open read-only persisted subagent history in a Kitty terminal',
+    handler: async (_args: string, ctx: any) => {
+      const cwd = typeof ctx?.cwd === 'string' && ctx.cwd ? ctx.cwd : process.cwd();
+      const notify = ctx?.ui?.notify?.bind(ctx.ui);
+      const result = await terminalViewerLauncher({
+        cwd,
+        sessionId: resolveCurrentSessionId(ctx),
+        dbPath: resolveSubagentHistoryDbPath(process.env),
+        viewerPath: SUBAGENTS_TERMINAL_VIEWER_PATH,
+        refreshMs: SUBAGENTS_TERMINAL_REFRESH_MS,
+        onSpawnError: (failure: { message: string }) => notify?.(failure.message, 'error'),
+      });
+
+      if (result.ok) {
+        const message = 'Opened read-only terminal viewer shell in Kitty. PR1 bootstrap is active; current-session history rendering/querying lands in PR2/PR3.';
+        notify?.(message, 'info');
+        return message;
+      }
+
+      notify?.(result.message, 'error');
+      return result.message;
+    },
   });
 
 }

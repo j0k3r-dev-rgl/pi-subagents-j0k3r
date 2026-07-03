@@ -5,6 +5,7 @@ import { sdkSubagentRunner } from './runner.js';
 import { SubagentHistoryStore } from './history.js';
 import { publishInteractionResponse, sanitizeInteractionTransportText } from './interaction-channel.js';
 import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
+import { resolveCurrentSessionId } from './session-id.js';
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
 import type { ModelRef, SubagentDefinition, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
 
@@ -43,13 +44,6 @@ function isSqliteBusyError(error: unknown): boolean {
 
 function modelRefLabel(model: ModelRef | undefined): string | undefined {
   return model ? `${model.provider}/${model.id}` : undefined;
-}
-
-function sessionIdFromContext(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
 }
 
 function sanitizeUnknown<T>(value: T): T {
@@ -274,7 +268,7 @@ export class SubagentManager {
     limiter = createLimiter(1),
   ): string {
     const cwd = ctx?.cwd ?? process.cwd();
-    const session_id = sessionIdFromContext(ctx);
+    const session_id = resolveCurrentSessionId(ctx);
     const effectiveProfile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
     const id = taskId(definition.name);
     const controller = new AbortController();

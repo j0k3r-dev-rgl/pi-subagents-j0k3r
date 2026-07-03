@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as Record<string, any>;
+const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
 
 describe('pi package manifest', () => {
   it('is a public pi package named after the project directory', () => {
@@ -36,13 +37,24 @@ describe('pi package manifest', () => {
     expect(packageJson.files).toEqual(expect.arrayContaining([
       'index.ts',
       'src',
+      'bin',
       'skills',
       'scripts/verify-package-files.mjs',
       '.releaserc.json',
       'README.md',
       'LICENSE',
     ]));
+    expect(packageJson.bin).toMatchObject({ 'subagents-terminal-viewer': './bin/subagents-terminal-viewer.mjs' });
     expect(packageJson.files).not.toContain('node_modules');
     expect(packageJson.files).not.toContain('test');
+  });
+
+  it('documents the PR1 terminal viewer as an honest shell/bootstrap only', () => {
+    const externalViewerSection = readme.slice(readme.indexOf('### External terminal history viewer'));
+
+    expect(externalViewerSection).toContain('PR 1 opens the read-only terminal viewer shell/bootstrap');
+    expect(externalViewerSection).toContain('current-session history rendering/querying lands in PR 2/PR 3');
+    expect(externalViewerSection).not.toMatch(/PR 1[^\n.]*displays[^\n.]*prompts/i);
+    expect(externalViewerSection).not.toMatch(/The external viewer may display persisted prompts, transcripts, results, errors, and tool output in a separate OS window\./);
   });
 });

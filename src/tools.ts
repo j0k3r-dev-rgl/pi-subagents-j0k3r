@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import { readSubagentsConfig } from './config.js';
+import { resolveCurrentSessionId } from './session-id.js';
 import type { SubagentManager } from './manager.js';
 import type { SubagentTask } from './types.js';
 
@@ -219,13 +220,6 @@ function textComponent(text: string) {
 
 function taskFromDetails(result: any): SubagentTask | undefined {
   return result?.details?.tasks?.[0] ?? result?.details?.results?.[0] ?? result?.details?.task;
-}
-
-function sessionIdFromToolContext(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
 }
 
 function compactTaskForToolResult(task: SubagentTask): SubagentTask {
@@ -469,7 +463,7 @@ export function registerSubagentTools(pi: any, manager: SubagentManager): void {
     async execute(_id: string, _params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
         const cwd = ctx?.cwd ?? process.cwd();
-        const tasks = manager.listSessionTasks(cwd, sessionIdFromToolContext(ctx));
+        const tasks = manager.listSessionTasks(cwd, resolveCurrentSessionId(ctx));
         const compactTasks = tasks.map(compactTaskWithoutFinalText);
         return ok(formatTaskListSummary(compactTasks), { tasks: compactTasks });
       } catch (e) { return fail(e); }

@@ -11,6 +11,7 @@ Pi extension for delegating work to markdown-defined subagents. It registers too
 - Subagent markdown used as system prompt, with delegated task/context as the user prompt.
 - Project-scoped task history in a global SQLite data/cache location.
 - TUI history panel via `/subagents` or `ctrl+,`.
+- Kitty-first external read-only terminal viewer shell via `/subagents-terminal`.
 - Claude-mode background handoff via `ctrl+h` by default, configurable in `subagents.json`.
 - TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`.
 - Model profile UI via `/subagent-models`.
@@ -286,6 +287,7 @@ Behavior:
 | Entry point | Description |
 |---|---|
 | `/subagents` | Open the session-focused TUI subagent history panel. |
+| `/subagents-terminal` | Open a Kitty terminal with the read-only viewer shell; current-session history rendering/querying lands in PR 2/PR 3. |
 | `/subagent-models` | Configure subagent and SDD phase model profiles in the matching local or global config. |
 | `ctrl+,` | Open the TUI subagent history panel in OpenCode mode by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
 | `x` | Cancel the currently selected queued/running subagent from the open history/detail panel by default. Configurable via `detail_cancel_shortcut` in `subagents.json`. |
@@ -334,6 +336,18 @@ When `debug: true` is configured, the extension also may write debug diagnostics
 ```
 
 History and debug logging are best-effort: failures to persist them should not break delegation.
+
+### External terminal history viewer
+
+`/subagents-terminal` opens a separate Kitty OS terminal window with a packaged Node viewer (`bin/subagents-terminal-viewer.mjs`). V1 is Kitty-first: if Kitty is missing, exits immediately with a launch failure, or cannot be launched, Pi reports a clear error and the existing `/subagents` panel remains available.
+
+PR 1 opens the read-only terminal viewer shell/bootstrap only. When Pi can resolve the current session id, the launcher passes `cwd`, history DB path, session id, and refresh interval as separate argv values with `shell: false` and a scrubbed child environment. This PR 1 foundation intentionally uses explicit argv transport; a one-shot config file or fd handoff can be considered later if the chain needs to reduce argv exposure.
+
+If the current session id is unavailable, the viewer fails closed: it shows that current-session scope is unavailable, does not query persisted history, and tells the user to use `/subagents` in the main Pi session. V1 does not show same-cwd historical tasks without an explicit current session.
+
+The PR 1 shell is intended for read-only bootstrap/navigation readiness only; task control actions such as cancel, run, rerun, retry, background, handoff, edit, delete, migration, or configuration changes are not part of the terminal viewer. Later slices will render persisted prompts, transcripts, results, errors, and tool output in the separate OS window, so treat that future view as potentially sensitive.
+
+Known V1 parity gaps: PR 1 does not query SQLite or render current-session history yet; current-session history rendering/querying lands in PR 2/PR 3. The full viewer will be history-backed and may lag live in-memory `/subagents` state; unflushed active task updates, runtime interaction requests, cancellation/control callbacks, rich Pi custom UI components, and fields not persisted in SQLite are unavailable. Later slices add the read-only SQLite query layer, terminal-output sanitization, full persisted parity rendering, and auto-refresh behavior.
 
 ## Generic interaction handling
 
