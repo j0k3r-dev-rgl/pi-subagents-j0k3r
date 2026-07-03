@@ -9,7 +9,8 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_STALL_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_BACKGROUND_HANDOFF_SHORTCUT = 'ctrl+h';
 const DEFAULT_HISTORY_PANEL_SHORTCUT = 'ctrl+,';
-const DEFAULT_TERMINAL_VIEWER_SHORTCUT = 'ctrl+alt+,';
+const DEFAULT_TERMINAL_VIEWER_SHORTCUT = 'ctrl+alt+/';
+const TERMINAL_VIEWER_SYMBOL_SHORTCUTS = new Set(['ctrl+,', 'ctrl+shift+,', 'ctrl+alt+,', 'ctrl+alt+/']);
 const DEFAULT_DETAIL_CANCEL_SHORTCUT = 'x';
 const BLOCKED_SUBAGENT_TOOLS = new Set([
   'subagent_run',
@@ -125,7 +126,9 @@ function parseCtrlShortcut(value: any, fallback: string): string {
 
 function parseTerminalViewerShortcut(value: any): string {
   const shortcut = String(value ?? DEFAULT_TERMINAL_VIEWER_SHORTCUT).trim().toLowerCase();
-  return /^(?:ctrl\+(?:[a-z]|,)|ctrl\+shift\+(?:[a-z]|,)|ctrl\+alt\+(?:[a-z]|,))$/.test(shortcut) ? shortcut : DEFAULT_TERMINAL_VIEWER_SHORTCUT;
+  const isLetterShortcut = /^(?:ctrl\+[a-z]|ctrl\+shift\+[a-z]|ctrl\+alt\+[a-z])$/.test(shortcut);
+  const isSupportedSymbolShortcut = TERMINAL_VIEWER_SYMBOL_SHORTCUTS.has(shortcut);
+  return isLetterShortcut || isSupportedSymbolShortcut ? shortcut : DEFAULT_TERMINAL_VIEWER_SHORTCUT;
 }
 
 function parseDetailShortcut(value: any): string {
