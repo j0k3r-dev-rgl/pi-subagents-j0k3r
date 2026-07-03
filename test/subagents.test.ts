@@ -1217,7 +1217,7 @@ describe('subagents extension', () => {
     expect(tools).toContain('subagent_status');
     expect(tools).toContain('subagent_result');
     expect(commands).toEqual(['subagents', 'subagent-models', 'subagents-terminal']);
-    expect(shortcuts).toEqual(['ctrl+,', 'ctrl+h', 'ctrl+shift+,']);
+    expect(shortcuts).toEqual(['ctrl+,', 'ctrl+h', 'ctrl+alt+,']);
   });
 
   it('launches /subagents-terminal with current-session handoff data and user-visible success feedback', async () => {
@@ -1324,7 +1324,7 @@ describe('subagents extension', () => {
     extension({
       registerTool: () => undefined,
       registerCommand: () => undefined,
-      registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+shift+,') shortcutHandler = shortcut.handler; },
+      registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+alt+,') shortcutHandler = shortcut.handler; },
       subagentsTerminalLauncher: launcher,
     });
 
@@ -1344,7 +1344,7 @@ describe('subagents extension', () => {
   });
 
   it('launches /subagents-terminal from the configured terminal viewer shortcut', async () => {
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ terminal_viewer_shortcut: 'ctrl+shift+t' }));
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ terminal_viewer_shortcut: 'ctrl+alt+t' }));
     const previousCwd = process.cwd();
     let shortcutHandler: ((ctx: any) => Promise<string>) | undefined;
     let launchOptions: any;
@@ -1353,7 +1353,7 @@ describe('subagents extension', () => {
       extension({
         registerTool: () => undefined,
         registerCommand: () => undefined,
-        registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+shift+t') shortcutHandler = shortcut.handler; },
+        registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+alt+t') shortcutHandler = shortcut.handler; },
         subagentsTerminalLauncher: (options: any) => { launchOptions = options; return { ok: true }; },
       });
     } finally {
@@ -1509,7 +1509,7 @@ describe('subagents extension', () => {
         registerCommand: () => undefined,
         registerShortcut: (key: string) => shortcuts.push(key),
       });
-      expect(shortcuts).toEqual(['ctrl+p', 'ctrl+shift+q', 'ctrl+h', 'ctrl+shift+,']);
+      expect(shortcuts).toEqual(['ctrl+p', 'ctrl+shift+q', 'ctrl+h', 'ctrl+alt+,']);
     } finally {
       process.chdir(previousCwd);
     }
@@ -1619,7 +1619,7 @@ describe('subagents extension', () => {
         registerCommand: () => undefined,
         registerShortcut: (key: string) => shortcuts.push(key),
       });
-      expect(shortcuts).toEqual(['ctrl+,', 'ctrl+b', 'ctrl+shift+,']);
+      expect(shortcuts).toEqual(['ctrl+,', 'ctrl+b', 'ctrl+alt+,']);
     } finally {
       process.chdir(previousCwd);
     }
@@ -1877,7 +1877,7 @@ describe('subagents extension', () => {
   it('supports configurable opencode history, detail cancel, and terminal viewer shortcuts', () => {
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+,');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
-    expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+shift+,');
+    expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+alt+,');
 
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ history_panel_shortcut: 'CTRL+P', detail_cancel_shortcut: 'x', terminal_viewer_shortcut: 'CTRL+SHIFT+T' }));
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+p');
@@ -1892,10 +1892,13 @@ describe('subagents extension', () => {
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+,');
     expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+shift+,');
 
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ terminalViewerShortcut: 'CTRL+ALT+T' }));
+    expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+alt+t');
+
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ historyPanelShortcut: 'alt+p', detailCancelShortcut: 'alt+w', terminalViewerShortcut: 'alt+t' }));
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+,');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
-    expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+shift+,');
+    expect(readSubagentsConfig(tmp).terminal_viewer_shortcut).toBe('ctrl+alt+,');
   });
 
   it('keeps project model_profiles precedence while scalar config precedence is unchanged', () => {

@@ -547,7 +547,7 @@ export default function subagentsExtension(pi: any): void {
     },
   });
 
-  const terminalViewerShortcut = readSubagentsConfig(process.cwd()).terminal_viewer_shortcut ?? 'ctrl+shift+,';
+  const terminalViewerShortcut = readSubagentsConfig(process.cwd()).terminal_viewer_shortcut ?? 'ctrl+alt+,';
   pi.registerShortcut?.(terminalViewerShortcut, {
     description: 'Open read-only persisted subagent history in a Kitty terminal',
     handler: async (ctx: any) => openSubagentsTerminal(ctx),
