@@ -217,7 +217,11 @@ function debugLog(context: Pick<SubagentThreadRenderContext, 'cwd'> | undefined,
 function renderComponent(component: unknown, width: number): string[] | undefined {
   if (!component || typeof (component as any).render !== 'function') return undefined;
   const lines = (component as any).render(width);
-  return Array.isArray(lines) ? lines.filter((line): line is string => typeof line === 'string') : undefined;
+  return Array.isArray(lines)
+    ? lines
+        .filter((line): line is string => typeof line === 'string')
+        .flatMap((line) => line.replace(/\r\n?/g, '\n').split('\n'))
+    : undefined;
 }
 
 const TERMINAL_ESCAPE_RE = /\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g;
