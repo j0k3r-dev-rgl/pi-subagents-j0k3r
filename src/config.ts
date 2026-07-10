@@ -10,6 +10,7 @@ const DEFAULT_STALL_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_BACKGROUND_HANDOFF_SHORTCUT = 'ctrl+h';
 const DEFAULT_HISTORY_PANEL_SHORTCUT = 'ctrl+,';
 const DEFAULT_DETAIL_CANCEL_SHORTCUT = 'x';
+const DEFAULT_RENDER_DEBUG_LOG_PATH = path.join(os.tmpdir(), 'pi-subagents-render.jsonl');
 const BLOCKED_SUBAGENT_TOOLS = new Set([
   'subagent_run',
   'subagent_list_agents',
@@ -141,6 +142,23 @@ function parseBoolean(value: any, fallback = false): boolean {
   return fallback;
 }
 
+function parseRenderDebugPartial(value: unknown): { enabled?: boolean; path?: string } {
+  if (!isPlainObject(value)) return {};
+  const partial: { enabled?: boolean; path?: string } = {};
+  if (value.enabled === true) partial.enabled = true;
+  else if (value.enabled === false) partial.enabled = false;
+  if (typeof value.path === 'string' && value.path.trim()) partial.path = value.path.trim();
+  return partial;
+}
+
+function parseRenderDebugConfig(globalRaw: Record<string, unknown>, projectRaw: Record<string, unknown>): SubagentsConfig['render_debug'] {
+  const globalPartial = parseRenderDebugPartial(globalRaw.render_debug ?? globalRaw.renderDebug);
+  const projectPartial = parseRenderDebugPartial(projectRaw.render_debug ?? projectRaw.renderDebug);
+  const merged = { ...globalPartial, ...projectPartial };
+  if (merged.enabled !== true) return undefined;
+  return { enabled: true, path: merged.path ?? DEFAULT_RENDER_DEBUG_LOG_PATH };
+}
+
 function parseModelProfile(value: unknown): SubagentModelProfile | undefined {
   if (!isPlainObject(value)) return undefined;
   const profile: SubagentModelProfile = {};
@@ -196,6 +214,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
     debug: parseBoolean(raw.debug, false),
+    render_debug: parseRenderDebugConfig(globalRaw, projectRaw),
   };
 }
 

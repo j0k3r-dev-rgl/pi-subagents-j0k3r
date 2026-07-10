@@ -64,6 +64,14 @@ export class SubagentsHistoryPanel {
   private toolOutputExpanded = false;
   private hydratedTasks = new Map<string, { signature: string; task: SubagentTask }>();
   private bodyCache = new Map<string, string[]>();
+  private lastRenderDebugState?: {
+    configuredMaxLines: number;
+    renderWidth: number;
+    renderedLineCount: number;
+    bodyHeight: number;
+    maxVisibleWidth: number;
+    widthViolationCount: number;
+  };
 
   constructor(
     private tasksProvider: SubagentTask[] | (() => SubagentTask[]),
@@ -143,6 +151,38 @@ export class SubagentsHistoryPanel {
     }
   }
 
+  getRenderDebugState(): {
+    taskCount: number;
+    selectedIndex: number;
+    selectedStatus?: string;
+    scrollOffset: number;
+    followTail: boolean;
+    hasUsage: boolean;
+    configuredMaxLines?: number;
+    renderWidth?: number;
+    renderedLineCount?: number;
+    bodyHeight?: number;
+    maxVisibleWidth?: number;
+    widthViolationCount?: number;
+  } {
+    const tasks = this.tasks();
+    const task = tasks[this.selected];
+    return {
+      taskCount: tasks.length,
+      selectedIndex: task ? this.selected : -1,
+      selectedStatus: task?.status,
+      scrollOffset: this.scroll,
+      followTail: this.followTail,
+      hasUsage: Boolean(task?.usage),
+      configuredMaxLines: this.lastRenderDebugState?.configuredMaxLines,
+      renderWidth: this.lastRenderDebugState?.renderWidth,
+      renderedLineCount: this.lastRenderDebugState?.renderedLineCount,
+      bodyHeight: this.lastRenderDebugState?.bodyHeight,
+      maxVisibleWidth: this.lastRenderDebugState?.maxVisibleWidth,
+      widthViolationCount: this.lastRenderDebugState?.widthViolationCount,
+    };
+  }
+
   render(width: number): string[] {
     const w = Math.max(40, width);
     const bodyWidth = w;
@@ -174,6 +214,21 @@ export class SubagentsHistoryPanel {
     if (!tasks.length) {
       lines.push(line(dim('No subagent tasks recorded in this session yet.')));
       while (lines.length < maxLines) lines.push('');
+      const lineWidths = lines.map((entry) => {
+        try {
+          return this.visibleWidth(entry);
+        } catch {
+          return terminalVisibleWidth(entry);
+        }
+      });
+      this.lastRenderDebugState = {
+        configuredMaxLines: maxLines,
+        renderWidth: bodyWidth,
+        renderedLineCount: lines.length,
+        bodyHeight: Math.max(0, maxLines - 3),
+        maxVisibleWidth: lineWidths.reduce((max, value) => Math.max(max, value), 0),
+        widthViolationCount: lineWidths.filter((value) => value > bodyWidth).length,
+      };
       return lines;
     }
 
@@ -204,6 +259,21 @@ export class SubagentsHistoryPanel {
     while (lines.length < maxLines - 1) lines.push('');
     const position = wrapped.length > bodyHeight ? ` ${this.scroll + 1}-${Math.min(wrapped.length, this.scroll + bodyHeight)}/${wrapped.length}` : '';
     lines.push(line(`${dim('─'.repeat(Math.max(0, bodyWidth - position.length)))}${dim(position)}`));
+    const lineWidths = lines.map((entry) => {
+      try {
+        return this.visibleWidth(entry);
+      } catch {
+        return terminalVisibleWidth(entry);
+      }
+    });
+    this.lastRenderDebugState = {
+      configuredMaxLines: maxLines,
+      renderWidth: bodyWidth,
+      renderedLineCount: lines.length,
+      bodyHeight,
+      maxVisibleWidth: lineWidths.reduce((max, value) => Math.max(max, value), 0),
+      widthViolationCount: lineWidths.filter((value) => value > bodyWidth).length,
+    };
     return lines;
   }
 

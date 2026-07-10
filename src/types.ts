@@ -42,6 +42,11 @@ export type SubagentDefinition = {
 export type SubagentSessionResources = 'full' | 'lean';
 export type SubagentUiMode = 'opencode' | 'claude';
 
+export type SubagentsRenderDebugConfig = {
+  enabled: true;
+  path: string;
+};
+
 export type SubagentsConfig = {
   default_model?: ModelRef;
   default_effort?: ThinkingEffort;
@@ -58,6 +63,7 @@ export type SubagentsConfig = {
   history_panel_shortcut?: string;
   detail_cancel_shortcut?: string;
   debug?: boolean;
+  render_debug?: SubagentsRenderDebugConfig;
 };
 
 export type SubagentRunInput = {

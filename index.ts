@@ -3,6 +3,7 @@ import { readSubagentsConfig, subagentSourceWarnings } from './src/config.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from './src/tools.js';
 import { runSubagentModelsCommand } from './src/model-profiles-ui.js';
 import { SubagentsHistoryPanel } from './src/ui.js';
+import { createSubagentsRenderLogger } from './src/render-debug.js';
 import type { SubagentTask } from './src/types.js';
 
 type ClaudeBackgroundWidgetEntry = {
@@ -117,6 +118,32 @@ function setMouseTracking(tui: any, enabled: boolean): void {
   const write = tui?.terminal?.write?.bind(tui.terminal);
   if (typeof write !== 'function') return;
   write(enabled ? '\u001b[?1000h\u001b[?1006h' : '\u001b[?1006l\u001b[?1000l');
+}
+
+function subagentsPanelMouseWheelDelta(data: string): -1 | 1 | undefined {
+  const sgr = data.match(/^\u001b\[<(\d+);\d+;\d+M$/);
+  const urxvt = data.match(/^\u001b\[(\d+);\d+;\d+M$/);
+  const button = sgr || urxvt ? Number((sgr ?? urxvt)![1]) : data.startsWith('\u001b[M') && data.length >= 6 ? data.charCodeAt(3) - 32 : undefined;
+  if (button === undefined || !Number.isFinite(button) || (button & 64) === 0) return undefined;
+  return (button & 1) === 0 ? -1 : 1;
+}
+
+function classifySubagentsPanelInput(data: string, matchesPanelKey: (data: string, key: string) => boolean): { category: string; action: string } {
+  if (matchesPanelKey(data, 'escape') || matchesPanelKey(data, 'ctrl+c') || matchesPanelKey(data, 'q')) return { category: 'lifecycle', action: 'close' };
+  if (matchesPanelKey(data, 'ctrl+o') || data === '\u000f') return { category: 'display', action: 'toggle_expand' };
+  if (matchesPanelKey(data, 'detailCancel')) return { category: 'task', action: 'cancel_selected' };
+  const wheel = subagentsPanelMouseWheelDelta(data);
+  if (wheel === -1) return { category: 'scroll', action: 'up' };
+  if (wheel === 1) return { category: 'scroll', action: 'down' };
+  if (matchesPanelKey(data, 'right')) return { category: 'navigation', action: 'right' };
+  if (matchesPanelKey(data, 'left')) return { category: 'navigation', action: 'left' };
+  if (matchesPanelKey(data, 'down')) return { category: 'navigation', action: 'down' };
+  if (matchesPanelKey(data, 'up')) return { category: 'navigation', action: 'up' };
+  if (matchesPanelKey(data, 'pageDown')) return { category: 'scroll', action: 'page_down' };
+  if (matchesPanelKey(data, 'pageUp')) return { category: 'scroll', action: 'page_up' };
+  if (matchesPanelKey(data, 'home')) return { category: 'scroll', action: 'home' };
+  if (matchesPanelKey(data, 'end')) return { category: 'scroll', action: 'end' };
+  return { category: 'other', action: 'unmatched' };
 }
 
 function toolFromRegistry(registry: any, name: string): unknown {
@@ -438,12 +465,16 @@ export default function subagentsExtension(pi: any): void {
       await ctx.ui.custom(
       (tui: any, theme: any, _keybindings: any, done: () => void) => {
         setMouseTracking(tui, true);
+        const config = readSubagentsConfig(cwd);
+        const renderLogger = createSubagentsRenderLogger({ cwd, sessionId, config: config.render_debug });
+        let nextRenderReason = 'initial';
+        let renderCycle = 0;
         const close = () => {
           if (refresh) clearInterval(refresh);
+          renderLogger.log({ event: 'panel_disposed' });
           setMouseTracking(tui, false);
           done();
         };
-        const config = readSubagentsConfig(cwd);
         const baseMatchesKey = createSubagentsPanelKeyMatcher(_keybindings);
         const panel = new SubagentsHistoryPanel(
           () => manager.listSessionTasks(cwd, sessionId).slice(0, 100),
@@ -475,13 +506,59 @@ export default function subagentsExtension(pi: any): void {
           (id: string) => manager.cancel(id, 'cancelled from subagents detail view'),
           config.detail_cancel_shortcut ?? 'x',
         );
+        renderLogger.log({ event: 'panel_created' });
+        renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
         activePanelCancelSelected = () => panel.cancelSelectedActiveTask();
-        activePanelRequestRender = () => tui.requestRender?.();
-        refresh = setInterval(() => tui.requestRender?.(), 1000);
+        activePanelRequestRender = () => {
+          nextRenderReason = 'external';
+          renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
+          tui.requestRender?.();
+        };
+        refresh = setInterval(() => {
+          nextRenderReason = 'interval';
+          renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
+          tui.requestRender?.();
+        }, 1000);
         return {
-          render: (width: number) => panel.render(width),
+          render: (width: number) => {
+            const reason = nextRenderReason;
+            const currentRenderCycle = ++renderCycle;
+            renderLogger.log({
+              event: 'render_started',
+              reason,
+              renderCycle: currentRenderCycle,
+              dimensions: {
+                stdoutColumns: process.stdout.columns,
+                stdoutRows: process.stdout.rows,
+                renderWidth: width,
+              },
+            });
+            const startedAt = process.hrtime.bigint();
+            const lines = panel.render(width);
+            const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+            renderLogger.log({
+              event: 'render_completed',
+              reason,
+              renderCycle: currentRenderCycle,
+              durationMs,
+              dimensions: {
+                stdoutColumns: process.stdout.columns,
+                stdoutRows: process.stdout.rows,
+                renderWidth: width,
+              },
+              state: panel.getRenderDebugState(),
+            });
+            nextRenderReason = 'external';
+            return lines;
+          },
           invalidate: () => panel.invalidate(),
-          handleInput: (data: string) => { panel.handleInput(data); tui.requestRender?.(); },
+          handleInput: (data: string) => {
+            renderLogger.log({ event: 'input_received', input: classifySubagentsPanelInput(data, baseMatchesKey) });
+            nextRenderReason = 'input';
+            renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
+            panel.handleInput(data);
+            tui.requestRender?.();
+          },
         };
       },
       undefined,
