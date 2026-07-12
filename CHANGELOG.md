@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-07-12
+
+### Fixed
+- Stabilized `/subagents` rendering with a full-screen overlay that prevents parent-chat flicker and reserves space for the panel border.
+
+## 1.2.0 - 2026-07-12
 
 ### Added
 - Added opt-in render diagnostics with bounded JSONL logging for subagent UI and completion rendering.
