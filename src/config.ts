@@ -5,8 +5,8 @@ import type { ModelRef, SubagentDefinition, SubagentDefinitionScope, SubagentMod
 
 const DEFAULT_TOOLS = ['read', 'memory_context', 'memory_search', 'memory_recall', 'memory_get'];
 const DEFAULT_MAX_CONCURRENCY = 5;
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
-const DEFAULT_STALL_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
+const DEFAULT_STALL_TIMEOUT_MS = 4 * 60 * 1000;
 const DEFAULT_BACKGROUND_HANDOFF_SHORTCUT = 'ctrl+h';
 const DEFAULT_HISTORY_PANEL_SHORTCUT = 'ctrl+,';
 const DEFAULT_DETAIL_CANCEL_SHORTCUT = 'x';

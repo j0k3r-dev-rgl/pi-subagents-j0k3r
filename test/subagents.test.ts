@@ -1636,8 +1636,8 @@ describe('subagents extension', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ max_concurrency: 'bad', timeout_ms: 'bad', stall_timeout_ms: -1 }));
     const config = readSubagentsConfig(tmp);
     expect(config.max_concurrency).toBe(5);
-    expect(config.timeout_ms).toBe(600000);
-    expect(config.stall_timeout_ms).toBe(120000);
+    expect(config.timeout_ms).toBe(1200000);
+    expect(config.stall_timeout_ms).toBe(240000);
   });
 
   it('loads global subagents and lets project-local agents/config override them', () => {

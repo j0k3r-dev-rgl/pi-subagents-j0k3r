@@ -139,8 +139,8 @@ Example:
 {
   "default_model": "anthropic/claude-sonnet-4-5",
   "default_effort": "medium",
-  "timeout_ms": 600000,
-  "stall_timeout_ms": 120000,
+  "timeout_ms": 1200000,
+  "stall_timeout_ms": 240000,
   "max_concurrency": 5,
   "session_resources": "lean",
   "history_panel_shortcut": "ctrl+,",
@@ -173,8 +173,8 @@ Example:
 | `default_model` | current orchestrator model | Fallback model for all subagents. Format: `provider/model-id`. |
 | `default_effort` | current orchestrator effort | Fallback thinking effort. Also accepts `default_thinking_level` or `thinkingLevel`. |
 | `model_profiles` | `{}` | Per-agent model/effort overrides scoped to matching definitions. Project-local profiles apply to project-local definitions; global profiles apply to global definitions. |
-| `timeout_ms` | `600000` | Total timeout per subagent task. |
-| `stall_timeout_ms` | `120000` | Inactivity timeout for a subagent session. |
+| `timeout_ms` | `1200000` | Total timeout per subagent task (20 minutes). |
+| `stall_timeout_ms` | `240000` | Inactivity timeout for a subagent session (4 minutes). |
 | `max_concurrency` | `5` | Max concurrent subagent tasks per cwd/config pair. |
 | `session_resources` | `lean` | SDK resource loading mode. `lean` uses the subagent markdown body as the nested session system prompt, skips skills, prompt templates, themes, and context files, and loads extensions in tools-only/safety-hook mode so allowlisted extension tools remain available without startup context injection. Use explicit `full` only when a subagent intentionally needs the full Pi resource set. Also accepts camelCase `sessionResources`. |
 | `history_panel_shortcut` | `ctrl+,` | OpenCode-mode shortcut used to open the subagents history/detail panel. Accepts `ctrl+<letter>` or `ctrl+,` and also accepts camelCase `historyPanelShortcut`. |

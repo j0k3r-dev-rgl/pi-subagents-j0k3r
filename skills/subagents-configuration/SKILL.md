@@ -120,8 +120,8 @@ Recommended `subagents.json` starter:
 ```json
 {
   "mode": "opencode",
-  "timeout_ms": 600000,
-  "stall_timeout_ms": 120000,
+  "timeout_ms": 1200000,
+  "stall_timeout_ms": 240000,
   "max_concurrency": 5,
   "debug": false,
   "session_resources": "lean",
