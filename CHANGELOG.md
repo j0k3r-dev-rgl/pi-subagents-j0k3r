@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+### Added
+- Added opt-in render diagnostics with bounded JSONL logging for subagent UI and completion rendering.
+- Added structured, versioned subagent execution errors covering provider failures, context limits, timeouts, stalls, cancellations, fallback attempts, persistence, tool responses, and history UI.
+
 ### Fixed
 - Fixed manual task-mode background handoff so it frees the chat only when the user explicitly sends the running subagent to background.
 - Fixed background completion delivery so notifications arrive while the main agent continues working without triggering an extra follow-up turn.
+- Increased the default task timeout to 20 minutes and inactivity timeout to 4 minutes.
+- Preserved machine-readable failure details while retaining backward-compatible human-readable error messages.
+
+### Documentation
+- Added rendering investigation and solution notes covering terminal synchronization, viewport stability, and renderer trade-offs.
 
 ## 1.1.0 - 2026-06-27
 
