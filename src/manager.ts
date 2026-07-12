@@ -4,9 +4,10 @@ import { writeSubagentsDebugLog } from './debug.js';
 import { sdkSubagentRunner } from './runner.js';
 import { SubagentHistoryStore } from './history.js';
 import { publishInteractionResponse, sanitizeInteractionTransportText } from './interaction-channel.js';
+import { classifyThrownError, deriveErrorString, enrichErrorMetadata, normalizeErrorMetadata, SubagentStructuredError } from './error-metadata.js';
 import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
-import type { ModelRef, SubagentDefinition, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
+import type { ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
 
 function nowIso(): string { return new Date().toISOString(); }
 function taskId(agent: string): string { return `subtask_${agent}_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`; }
@@ -57,6 +58,20 @@ function sanitizeUnknown<T>(value: T): T {
   if (Array.isArray(value)) return value.map((item) => sanitizeUnknown(item)) as T;
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, sanitizeUnknown(entry)])) as T;
+}
+
+function hasPartialResult(task: SubagentTask): boolean {
+  return Boolean(task.output_preview || task.result || task.thread_snapshot);
+}
+
+function enrichTerminalMetadata(task: SubagentTask, parentSessionId: string | undefined, metadata: SubagentErrorMetadata): SubagentErrorMetadata {
+  return enrichErrorMetadata(metadata, {
+    usage_at_failure: task.usage,
+    last_activity: task.last_activity,
+    partial_result_available: hasPartialResult(task),
+    task_id: task.id,
+    parent_session_id: parentSessionId,
+  });
 }
 
 function interactionPromptMessage(request: SubagentInteractionRequest): string {
@@ -257,6 +272,16 @@ export class SubagentManager {
     task.last_activity = task.output_preview ? `${reason}; partial output preserved` : reason;
     task.last_activity_at = nowIso();
     task.ended_at = task.last_activity_at;
+    const phase = reason === 'parent abort' ? 'manager' : 'user';
+    task.error_metadata = enrichTerminalMetadata(task, task.session_id, normalizeErrorMetadata({
+      category: 'cancelled',
+      message: `Subagent cancelled: ${reason}`,
+      phase,
+      retryable: false,
+      partial_result_available: hasPartialResult(task),
+      details: { cancel_reason: reason },
+    }));
+    task.error = deriveErrorString(task.error_metadata);
     const cwd = this.taskCwds.get(id);
     if (cwd) this.record(cwd, task, task.last_activity, true);
     return task;
@@ -297,7 +322,7 @@ export class SubagentManager {
     this.tasks.set(id, task);
     this.taskCwds.set(id, cwd);
     this.controllers.set(id, controller);
-    const abortFromParent = () => this.cancel(id, 'cancelled by parent abort');
+    const abortFromParent = () => this.cancel(id, 'parent abort');
     if (parentSignal?.aborted) abortFromParent();
     else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
     this.record(cwd, task, 'queued', true);
@@ -431,7 +456,22 @@ export class SubagentManager {
       } catch (error) {
         if ((task as SubagentTask).status === 'cancelled') return;
         task.status = 'failed';
-        task.error = timedOut ? `timed out after ${config.timeout_ms}ms` : error instanceof Error ? error.message : String(error);
+        const metadata = timedOut
+          ? normalizeErrorMetadata({
+              category: 'total_timeout',
+              message: `timed out after ${config.timeout_ms}ms`,
+              phase: 'manager',
+              retryable: false,
+              partial_result_available: hasPartialResult(task),
+              details: { timeout_ms: String(config.timeout_ms) },
+            })
+          : error instanceof SubagentStructuredError
+            ? error.error_metadata
+            : classifyThrownError(error, { phase: 'manager' });
+        task.error_metadata = enrichTerminalMetadata(task, session_id, metadata);
+        task.error = timedOut || error instanceof SubagentStructuredError
+          ? deriveErrorString(task.error_metadata)
+          : error instanceof Error ? error.message : String(error);
         task.last_activity = `failed: ${task.error}`;
         task.last_activity_at = nowIso();
         task.ended_at = task.last_activity_at;

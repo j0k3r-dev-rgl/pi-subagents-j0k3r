@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { parseErrorMetadata, serializeErrorMetadata } from './error-metadata.js';
 import { boundThreadSnapshot } from './thread-view.js';
 import type { SubagentTask, SubagentThreadSnapshot } from './types.js';
 
@@ -97,6 +98,8 @@ export class SubagentHistoryStore {
         effort_source TEXT,
         fallback_used INTEGER,
         error TEXT,
+        error_metadata_json TEXT,
+        error_category TEXT,
         result TEXT,
         thread_snapshot_json TEXT
       );
@@ -114,18 +117,32 @@ export class SubagentHistoryStore {
       CREATE INDEX IF NOT EXISTS idx_subagent_events_task ON subagent_events(task_id, created_at);
     `);
     ensureColumn(db, 'subagent_tasks', 'system_prompt', 'TEXT');
+    ensureColumn(db, 'subagent_tasks', 'error_metadata_json', 'TEXT');
+    ensureColumn(db, 'subagent_tasks', 'error_category', 'TEXT');
     this.dbs.set(file, db);
     return db;
   }
 
   upsertTask(cwd: string, task: SubagentTask): void {
+    let errorMetadataJson: string | null = null;
+    let errorCategory: string | null = null;
+    if (task.error_metadata !== undefined) {
+      try {
+        errorMetadataJson = serializeErrorMetadata(task.error_metadata);
+        errorCategory = parseErrorMetadata(errorMetadataJson)?.category ?? null;
+      } catch {
+        errorMetadataJson = null;
+        errorCategory = null;
+      }
+    }
+
     this.db(cwd).prepare(`
       INSERT INTO subagent_tasks (
         id, cwd, agent, mode, status, task, context, created_at, session_id, started_at, ended_at,
         last_activity_at, last_activity, output_preview, prompt, system_prompt, transcript,
         usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns,
-        model, effort, model_source, effort_source, fallback_used, error, result, thread_snapshot_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status=excluded.status,
         session_id=excluded.session_id,
@@ -150,6 +167,8 @@ export class SubagentHistoryStore {
         effort_source=excluded.effort_source,
         fallback_used=excluded.fallback_used,
         error=excluded.error,
+        error_metadata_json=excluded.error_metadata_json,
+        error_category=excluded.error_category,
         result=excluded.result,
         thread_snapshot_json=excluded.thread_snapshot_json
     `).run(
@@ -183,6 +202,8 @@ export class SubagentHistoryStore {
       value(task.effort_source),
       task.fallback_used === undefined ? null : task.fallback_used ? 1 : 0,
       value(task.error),
+      errorMetadataJson,
+      errorCategory,
       value(task.result),
       snapshotJson(task.thread_snapshot),
     );
@@ -248,6 +269,7 @@ function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
     effort_source: row.effort_source ?? undefined,
     fallback_used: row.fallback_used === null || row.fallback_used === undefined ? undefined : Boolean(row.fallback_used),
     error: row.error ?? undefined,
+    error_metadata: parseErrorMetadata(row.error_metadata_json),
     result: row.result ?? undefined,
     thread_snapshot: options.includeSnapshots === false ? undefined : parseSnapshotJson(row.thread_snapshot_json),
   };

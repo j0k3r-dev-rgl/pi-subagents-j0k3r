@@ -7,6 +7,7 @@ import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, complet
 import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile, subagentSourceWarnings } from '../src/config.js';
 import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
+import { SubagentStructuredError, deriveErrorString, normalizeErrorMetadata, parseErrorMetadata, safeErrorMetadataDetails, serializeErrorMetadata } from '../src/error-metadata.js';
 import { applyDirtyProfileEdit, buildModelProfileRows, buildNoChangesModelProfilesMessage, buildNonTuiModelProfilesMessage, commitStagedModelProfiles, createSubagentModelProfilesModal, globalSubagentsConfigPath, groupAvailableModelsByProvider, runSubagentModelsCommand, stageModelProfileEdit } from '../src/model-profiles-ui.js';
 import { resolveSubagentHistoryDbPath, resolveSubagentsHistoryHome, SubagentHistoryStore } from '../src/history.js';
 import { isSubagentsDebugEnabled, writeSubagentsDebugLog } from '../src/debug.js';
@@ -15,7 +16,7 @@ import { SubagentManager } from '../src/manager.js';
 import { registerSubagentTools } from '../src/tools.js';
 import { SubagentsHistoryPanel } from '../src/ui.js';
 import { boundThreadSnapshot, isValidThreadSnapshot, registerSubagentRuntimeToolDefinition, renderThreadBody, resetPiComponentCacheForTests } from '../src/thread-view.js';
-import type { EffectiveSubagentProfile, SubagentModelProfiles, SubagentRunner, SubagentTask } from '../src/types.js';
+import type { EffectiveSubagentProfile, SubagentErrorMetadata, SubagentModelProfiles, SubagentRunner, SubagentTask } from '../src/types.js';
 
 const require = createRequire(import.meta.url);
 
@@ -81,6 +82,63 @@ function withAgentDir<T>(agentDir: string, run: () => T): T {
 function readJsonl(file: string): any[] {
   return fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
+
+describe('structured error metadata public compatibility', () => {
+  it('exposes compatible public task types while keeping error string optional', () => {
+    const task: SubagentTask = {
+      id: 'task-error-metadata',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'render error',
+      created_at: new Date().toISOString(),
+      error: 'timed out after 123ms',
+      error_metadata: normalizeErrorMetadata({
+        category: 'total_timeout',
+        message: 'timed out after 123ms',
+        retryable: false,
+        partial_result_available: true,
+        details: { timeout_ms: '123', prompt: 'SYSTEM: hidden prompt text' },
+        last_activity: `Working in /tmp/fake-private.txt ${'x'.repeat(700)}`,
+      }),
+    };
+
+    expect(task.error).toBe('timed out after 123ms');
+    expect(task.error_metadata?.version).toBe(1);
+    expect(task.error_metadata?.last_activity?.length ?? 0).toBeLessThanOrEqual(512);
+    expect(task.error_metadata?.last_activity).not.toContain('/tmp/fake-private.txt');
+    expect(deriveErrorString(task.error_metadata!)).toBe(task.error);
+  });
+
+  it('serializes, parses, and exposes safe bounded metadata details without leaking secrets', () => {
+    const metadata: SubagentErrorMetadata = normalizeErrorMetadata({
+      category: 'provider_api_error',
+      message: 'Authorization: Bearer sk-fake-secret-token fake.user@example.com /tmp/fake-private.txt',
+      partial_result_available: false,
+      details: {
+        provider_code: '500',
+        auth_header: 'Authorization: Bearer sk-fake-secret-token',
+        prompt: 'USER: fake prompt body',
+        file_path: '/tmp/fake-private.txt',
+      },
+    });
+
+    const json = serializeErrorMetadata(metadata);
+    expect(json).toBeTruthy();
+    expect(json).not.toContain('sk-fake-secret-token');
+    expect(json).not.toContain('fake.user@example.com');
+    expect(json).not.toContain('/tmp/fake-private.txt');
+
+    const parsed = parseErrorMetadata(json);
+    expect(parsed).toBeDefined();
+    expect(parsed?.version).toBe(1);
+
+    const details = safeErrorMetadataDetails(parsed!);
+    expect(JSON.stringify(details)).not.toContain('sk-fake-secret-token');
+    expect(JSON.stringify(details)).not.toContain('fake.user@example.com');
+    expect(JSON.stringify(details)).not.toContain('/tmp/fake-private.txt');
+  });
+});
 
 describe('subagents extension', () => {
   it('does not statically depend on sibling extension internals', () => {
@@ -715,6 +773,80 @@ describe('subagents extension', () => {
     expect(rendered).toContain('structured snapshot wins');
     expect(rendered).not.toContain('legacy transcript should not win');
     expect(rendered).not.toContain('legacy result should not win');
+  });
+
+  it('renders failed and cancelled terminal errors even when a valid thread snapshot exists', () => {
+    const failedTask: SubagentTask = {
+      id: 'subtask_thread_failed',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'thread task failed',
+      created_at: new Date().toISOString(),
+      error: 'provider api error',
+      thread_snapshot: { version: 1, source: 'events', items: [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'structured snapshot body' }] } }] },
+    };
+    const cancelledTask: SubagentTask = {
+      id: 'subtask_thread_cancelled',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'cancelled',
+      task: 'thread task cancelled',
+      created_at: new Date().toISOString(),
+      error: 'Subagent cancelled: user request',
+      thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status', text: 'cancellation reached runner' }] },
+    };
+    const makePanel = (task: SubagentTask) => new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
+
+    const failedRendered = makePanel(failedTask).render(160).join('\n');
+    const cancelledRendered = makePanel(cancelledTask).render(160).join('\n');
+
+    expect(failedRendered).toContain('structured snapshot body');
+    expect(failedRendered).toContain('# error');
+    expect(failedRendered).toContain('provider api error');
+    expect(cancelledRendered).toContain('cancellation reached runner');
+    expect(cancelledRendered).toContain('# error');
+    expect(cancelledRendered).toContain('Subagent cancelled: user request');
+  });
+
+  it('does not duplicate terminal errors when an equivalent snapshot error item already exists', () => {
+    const task: SubagentTask = {
+      id: 'subtask_thread_error_dedup',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'thread task dedup',
+      created_at: new Date().toISOString(),
+      error: 'provider api error',
+      thread_snapshot: { version: 1, source: 'events', items: [{ type: 'error', text: 'provider api error' }] },
+    };
+    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
+    const rendered = panel.render(160).join('\n');
+
+    expect(rendered.match(/provider api error/g)).toHaveLength(1);
+    expect(rendered).not.toContain('# error\nprovider api error');
+  });
+
+  it('keeps completed snapshot rendering unaffected and preserves boundThreadSnapshot limits', () => {
+    const task: SubagentTask = {
+      id: 'subtask_thread_completed',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'thread task completed',
+      created_at: new Date().toISOString(),
+      error: 'should stay hidden',
+      thread_snapshot: { version: 1, source: 'events', items: [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'completed snapshot body' }] } }] },
+    };
+    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
+    const rendered = panel.render(160).join('\n');
+    const bounded = boundThreadSnapshot({ version: 1, source: 'events', items: [{ type: 'error', text: 'x'.repeat(5000) }, { type: 'status', text: 'second item' }] } as any, { textLimit: 32, maxItems: 1 });
+
+    expect(rendered).toContain('completed snapshot body');
+    expect(rendered).not.toContain('# error');
+    expect(rendered).not.toContain('should stay hidden');
+    expect(bounded?.items).toHaveLength(1);
+    expect((bounded?.items[0] as any).text.length).toBeLessThanOrEqual(32);
   });
 
   it('does not raw-truncate terminal-escaped Pi component lines that visually fit', () => {
@@ -2930,14 +3062,73 @@ describe('subagents extension', () => {
     expect(maxRunning).toBe(1);
   });
 
-  it('enforces configured timeout_ms even when runner ignores abort', async () => {
+  it('derives manager error text compatibly and enriches structured failure metadata eagerly', async () => {
+    writeAgent('analyst');
+    const runner: SubagentRunner = async ({ onActivity }) => {
+      onActivity?.({
+        message: 'streaming response',
+        output: 'partial answer before failure',
+        usage: { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 14, turns: 1 },
+      });
+      throw new SubagentStructuredError(normalizeErrorMetadata({
+        category: 'provider_rate_limit',
+        message: 'provider said rate limit exceeded',
+        retryable: true,
+        phase: 'runner_invoke',
+        partial_result_available: false,
+      }));
+    };
+    const manager = new SubagentManager(runner);
+
+    const result = await manager.run({ agent: 'analyst', task: 'structured failure', mode: 'task' }, { cwd: tmp, sessionId: 'parent-session-123' });
+
+    expect(result.results?.[0].status).toBe('failed');
+    expect(result.results?.[0].error).toBe('provider rate limit');
+    expect(result.results?.[0].error_metadata).toMatchObject({
+      version: 1,
+      category: 'provider_rate_limit',
+      retryable: true,
+      usage_at_failure: { input: 10, output: 4, contextTokens: 14, turns: 1 },
+      last_activity: 'streaming response',
+      partial_result_available: true,
+      parent_session_id: 'parent-session-123',
+    });
+    expect(result.results?.[0].error_metadata?.task_id).toBe(result.results?.[0].id);
+    expect(result.results?.[0].error_metadata?.message).toBe('provider said rate limit exceeded');
+  });
+
+  it('classifies manager total timeout ownership compatibly and preserves structured metadata', async () => {
     writeAgent('analyst');
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
     const runner: SubagentRunner = async () => new Promise(() => {});
     const manager = new SubagentManager(runner);
-    const result = await manager.run({ agent: 'analyst', task: 'timeout', mode: 'task' }, { cwd: tmp });
+    const result = await manager.run({ agent: 'analyst', task: 'timeout', mode: 'task' }, { cwd: tmp, sessionId: 'timeout-parent' });
+
     expect(result.results?.[0].status).toBe('failed');
-    expect(result.results?.[0].error).toContain('timed out');
+    expect(result.results?.[0].error).toBe('timed out after 20ms');
+    expect(result.results?.[0].error_metadata).toMatchObject({
+      version: 1,
+      category: 'total_timeout',
+      phase: 'manager',
+      retryable: false,
+      partial_result_available: false,
+      parent_session_id: 'timeout-parent',
+      details: { timeout_ms: '20' },
+    });
+  });
+
+  it('keeps exact-string compatibility for plain and malformed legacy manager failures while attaching metadata', async () => {
+    writeAgent('analyst');
+    const plainManager = new SubagentManager(async () => { throw new Error('legacy plain failure'); });
+    const malformedManager = new SubagentManager(async () => { throw { reason: 'legacy malformed failure' }; });
+
+    const plain = await plainManager.run({ agent: 'analyst', task: 'plain fail', mode: 'task' }, { cwd: tmp });
+    const malformed = await malformedManager.run({ agent: 'analyst', task: 'malformed fail', mode: 'task' }, { cwd: tmp });
+
+    expect(plain.results?.[0].error).toBe('legacy plain failure');
+    expect(plain.results?.[0].error_metadata).toMatchObject({ category: 'provider_api_error', message: 'legacy plain failure' });
+    expect(malformed.results?.[0].error).toBe('[object Object]');
+    expect(malformed.results?.[0].error_metadata).toMatchObject({ category: 'malformed_thrown_value', message: '[object Object]' });
   });
 
   it('marks tasks failed when a runner returns no final response text', async () => {
@@ -2993,12 +3184,60 @@ describe('subagents extension', () => {
     expect(notifications.some((n) => n.includes('completed'))).toBe(true);
   });
 
-  it('cancels running background tasks', async () => {
+  it('records manager cancel metadata and avoids double terminal records for explicit user cancellation', async () => {
     writeAgent('analyst');
-    const manager = new SubagentManager(mockRunner(100));
-    const result = await manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp });
-    const task = manager.cancel(result.task_ids[0]);
+    const persisted: Array<{ status: string; error?: string }> = [];
+    const history = {
+      upsertTask(_cwd: string, task: SubagentTask) { persisted.push({ status: task.status, error: task.error }); },
+      addEvent() {},
+      listTasks() { return []; },
+      listSessionTasks() { return []; },
+      getTask() { return undefined; },
+    };
+    const runner: SubagentRunner = async ({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('Subagent was aborted')), { once: true });
+    });
+    const manager = new SubagentManager(runner, history as any);
+    const result = await manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionId: 'cancel-parent' });
+    const task = manager.cancel(result.task_ids[0], 'user request');
+
     expect(task.status).toBe('cancelled');
+    expect(task.error).toBe('Subagent cancelled: user request');
+    expect(task.error_metadata).toMatchObject({
+      version: 1,
+      category: 'cancelled',
+      phase: 'user',
+      partial_result_available: false,
+      parent_session_id: 'cancel-parent',
+      details: { cancel_reason: 'user request' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(persisted.filter((entry) => entry.status === 'cancelled')).toHaveLength(1);
+    expect(persisted.filter((entry) => entry.status === 'failed')).toHaveLength(0);
+  });
+
+  it('records manager cancel metadata for parent abort with compatible wording', async () => {
+    writeAgent('analyst');
+    const runner: SubagentRunner = async ({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('Subagent was aborted')), { once: true });
+    });
+    const manager = new SubagentManager(runner);
+    const controller = new AbortController();
+    const runPromise = manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-session-456' }, controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    const result = await runPromise;
+    const task = manager.getTask(result.task_ids[0]);
+
+    expect(task?.status).toBe('cancelled');
+    expect(task?.error).toBe('Subagent cancelled: parent abort');
+    expect(task?.error_metadata).toMatchObject({
+      version: 1,
+      category: 'cancelled',
+      phase: 'manager',
+      parent_session_id: 'parent-session-456',
+      details: { cancel_reason: 'parent abort' },
+    });
   });
 
   it('cleans up queued cancellations and lets later tasks run', async () => {
@@ -3087,6 +3326,173 @@ describe('subagents extension', () => {
     expect(persisted?.prompt).toBe('## delegated task\nping');
     expect(persisted?.system_prompt).toBe('# Analyst\nSYSTEM_ONLY');
     expect(persisted?.prompt).not.toContain('SYSTEM_ONLY');
+  });
+
+  it('persists nullable structured error metadata and category across history reopen', () => {
+    const history = new SubagentHistoryStore();
+    const task: SubagentTask = {
+      id: 'subtask_error_metadata_history',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'persist structured failure',
+      created_at: new Date().toISOString(),
+      error: 'Subagent cancelled: user request',
+      error_metadata: normalizeErrorMetadata({
+        category: 'cancelled',
+        message: 'Subagent cancelled: user request',
+        partial_result_available: false,
+        details: { cancel_reason: 'user request', raw_payload: 'Authorization: Bearer sk-fake-secret-token' },
+      }),
+    } as any;
+
+    history.upsertTask(tmp, task);
+
+    const { DatabaseSync } = require('node:sqlite') as any;
+    const db = new DatabaseSync(resolveSubagentHistoryDbPath());
+    const columns = db.prepare('PRAGMA table_info(subagent_tasks)').all() as Array<{ name: string; notnull: number }>;
+    expect(columns.find((column) => column.name === 'error_metadata_json')?.notnull).toBe(0);
+    expect(columns.find((column) => column.name === 'error_category')?.notnull).toBe(0);
+
+    const row = db.prepare('SELECT error, error_metadata_json, error_category FROM subagent_tasks WHERE id = ?').all(task.id)[0] as any;
+    expect(row.error).toBe('Subagent cancelled: user request');
+    expect(row.error_category).toBe('cancelled');
+    expect(row.error_metadata_json).toContain('cancelled');
+    expect(row.error_metadata_json).not.toContain('sk-fake-secret-token');
+
+    const reopened = new SubagentHistoryStore().getTask(tmp, task.id);
+    expect(reopened?.error).toBe('Subagent cancelled: user request');
+    expect(reopened?.error_metadata?.category).toBe('cancelled');
+    expect(reopened?.error_metadata?.details?.raw_payload).toContain('[redacted]');
+  });
+
+  it('adds nullable error columns idempotently without backfilling legacy rows and preserves exact legacy error strings', () => {
+    const { DatabaseSync } = require('node:sqlite') as any;
+    fs.mkdirSync(path.dirname(resolveSubagentHistoryDbPath()), { recursive: true });
+    const db = new DatabaseSync(resolveSubagentHistoryDbPath());
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS subagent_tasks (
+        id TEXT PRIMARY KEY,
+        cwd TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task TEXT NOT NULL,
+        context TEXT,
+        created_at TEXT NOT NULL,
+        session_id TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        last_activity_at TEXT,
+        last_activity TEXT,
+        output_preview TEXT,
+        prompt TEXT,
+        system_prompt TEXT,
+        transcript TEXT,
+        usage_input INTEGER,
+        usage_output INTEGER,
+        usage_cache_read INTEGER,
+        usage_cache_write INTEGER,
+        usage_cost REAL,
+        usage_context_tokens INTEGER,
+        usage_turns INTEGER,
+        model TEXT,
+        effort TEXT,
+        model_source TEXT,
+        effort_source TEXT,
+        fallback_used INTEGER,
+        error TEXT,
+        result TEXT,
+        thread_snapshot_json TEXT
+      );
+    `);
+    db.prepare(`
+      INSERT INTO subagent_tasks (
+        id, cwd, agent, mode, status, task, created_at, error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'subtask_legacy_error_only',
+      tmp,
+      'analyst',
+      'task',
+      'failed',
+      'legacy history row',
+      new Date().toISOString(),
+      'legacy plain error  with  exact   spacing',
+    );
+
+    const reopenedStore = new SubagentHistoryStore();
+    const legacy = reopenedStore.getTask(tmp, 'subtask_legacy_error_only');
+    expect(legacy?.error).toBe('legacy plain error  with  exact   spacing');
+    expect(legacy?.error_metadata).toBeUndefined();
+
+    const migratedColumns = db.prepare('PRAGMA table_info(subagent_tasks)').all() as Array<{ name: string; notnull: number }>;
+    expect(migratedColumns.find((column) => column.name === 'error_metadata_json')?.notnull).toBe(0);
+    expect(migratedColumns.find((column) => column.name === 'error_category')?.notnull).toBe(0);
+
+    const row = db.prepare('SELECT error_metadata_json, error_category FROM subagent_tasks WHERE id = ?').all('subtask_legacy_error_only')[0] as any;
+    expect(row.error_metadata_json).toBeNull();
+    expect(row.error_category).toBeNull();
+
+    reopenedStore.upsertTask(tmp, {
+      id: 'subtask_no_error_metadata',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'no metadata needed',
+      created_at: new Date().toISOString(),
+      result: 'ok',
+    } as any);
+    const currentRow = db.prepare('SELECT error_metadata_json, error_category FROM subagent_tasks WHERE id = ?').all('subtask_no_error_metadata')[0] as any;
+    expect(currentRow.error_metadata_json).toBeNull();
+    expect(currentRow.error_category).toBeNull();
+  });
+
+  it('ignores malformed persisted error metadata json safely while preserving legacy error text', () => {
+    const history = new SubagentHistoryStore();
+    const task: SubagentTask = {
+      id: 'subtask_malformed_error_metadata',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'malformed metadata row',
+      created_at: new Date().toISOString(),
+      error: 'legacy malformed metadata error',
+    } as any;
+    history.upsertTask(tmp, task);
+
+    const { DatabaseSync } = require('node:sqlite') as any;
+    const db = new DatabaseSync(resolveSubagentHistoryDbPath());
+    db.prepare('UPDATE subagent_tasks SET error_metadata_json = ?, error_category = ? WHERE id = ?').run('{bad json', 'provider_api_error', task.id);
+
+    const loaded = history.getTask(tmp, task.id);
+    expect(loaded?.error).toBe('legacy malformed metadata error');
+    expect(loaded?.error_metadata).toBeUndefined();
+  });
+
+  it('never lets error metadata serialization failure escape history upsertTask', () => {
+    const history = new SubagentHistoryStore();
+    const task: SubagentTask = {
+      id: 'subtask_unserializable_error_metadata',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'unserializable metadata',
+      created_at: new Date().toISOString(),
+      error: 'legacy serialization-safe error',
+      error_metadata: {
+        category: 'provider_api_error',
+        message: 'should fail closed',
+        partial_result_available: false,
+        details: { broken: 1n as any },
+      } as any,
+    } as any;
+
+    expect(() => history.upsertTask(tmp, task)).not.toThrow();
+    const persisted = history.getTask(tmp, task.id);
+    expect(persisted?.error).toBe('legacy serialization-safe error');
+    expect(persisted?.error_metadata?.category).toBe('serialization_failure');
+    expect(deriveErrorString(persisted?.error_metadata!)).toBe('Subagent error metadata could not be serialized safely.');
   });
 
   it('keeps current-session listing available when sqlite history is temporarily busy', () => {
@@ -3451,6 +3857,156 @@ describe('subagents extension', () => {
     expect(result.content[0].text).toContain('Completed 1 subagent task');
     expect(serialized).not.toContain('thread_snapshot');
     expect(serialized).not.toContain('oversized snapshot text oversized snapshot text oversized snapshot text');
+  });
+
+  it('exposes only safe structured error summaries in subagent_run/status/result details while preserving legacy error text', async () => {
+    writeAgent('analyst');
+    const manager = new SubagentManager(async () => {
+      throw new SubagentStructuredError(normalizeErrorMetadata({
+        category: 'provider_api_error',
+        message: 'Authorization: Bearer sk-fake-secret-token fake.user@example.com /tmp/fake-private.txt',
+        partial_result_available: false,
+        details: {
+          provider_code: '429',
+          auth_header: 'Authorization: Bearer sk-fake-secret-token',
+          prompt: 'SYSTEM: hidden prompt body',
+          file_path: '/tmp/fake-private.txt',
+          nested_payload: JSON.stringify({ transcript: 'SECRET_FILE_BODY_DO_NOT_SHOW' }),
+        },
+        last_activity: 'USER: hidden prompt body /tmp/fake-private.txt',
+      }));
+    });
+    let runTool: any;
+    let statusTool: any;
+    let resultTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => {
+      if (tool.name === 'subagent_run') runTool = tool;
+      if (tool.name === 'subagent_status') statusTool = tool;
+      if (tool.name === 'subagent_result') resultTool = tool;
+    } }, manager);
+
+    const runResult = await runTool.execute('1', { agent: 'analyst', task: 'structured failure', mode: 'task' }, undefined, undefined, { cwd: tmp });
+    const taskId = runResult.details.results[0].id;
+    const statusResult = await statusTool.execute('2', { task_id: taskId }, undefined, undefined, { cwd: tmp });
+    const resultResult = await resultTool.execute('3', { task_id: taskId }, undefined, undefined, { cwd: tmp });
+
+    expect(runResult.isError).toBe(true);
+    expect(runResult.details.results[0].error).toBe('provider api error');
+    expect(statusResult.details.task.error).toBe('provider api error');
+    expect(resultResult.content[0].text).toBe('provider api error');
+    expect(resultResult.details.task.error).toBe('provider api error');
+
+    for (const task of [runResult.details.results[0], statusResult.details.task, resultResult.details.task]) {
+      expect(task.error_metadata).toMatchObject({
+        version: 1,
+        category: 'provider_api_error',
+        retryable: true,
+        code: 'provider_api_error',
+        partial_result_available: false,
+        details: { provider_code: '429' },
+      });
+      expect(task.error_metadata.message).toBeUndefined();
+      expect(task.error_metadata.last_activity).toBeUndefined();
+      expect(task.error_metadata.usage_at_failure).toBeUndefined();
+      expect(task.error_metadata.task_id).toBeUndefined();
+      expect(task.error_metadata.parent_session_id).toBeUndefined();
+      expect(task.error_metadata.attempts).toBeUndefined();
+      expect(task.error_metadata.cause).toBeUndefined();
+      const serialized = JSON.stringify(task.error_metadata);
+      expect(serialized).not.toContain('sk-fake-secret-token');
+      expect(serialized).not.toContain('fake.user@example.com');
+      expect(serialized).not.toContain('/tmp/fake-private.txt');
+      expect(serialized).not.toContain('hidden prompt body');
+      expect(serialized).not.toContain('SECRET_FILE_BODY_DO_NOT_SHOW');
+    }
+  });
+
+  it('fails closed when compact tool details encounter malformed error metadata payloads', async () => {
+    const circular: any = { category: 'provider_api_error', message: 'unsafe raw payload' };
+    circular.details = { circular };
+    const task: any = {
+      id: 'subtask_malformed_tool_error_metadata',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'failed',
+      task: 'broken metadata',
+      created_at: new Date().toISOString(),
+      error: 'provider api error',
+      error_metadata: circular,
+    };
+    const manager: any = {
+      getTask: () => task,
+    };
+    let statusTool: any;
+    let resultTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => {
+      if (tool.name === 'subagent_status') statusTool = tool;
+      if (tool.name === 'subagent_result') resultTool = tool;
+    } }, manager);
+
+    const statusResult = await statusTool.execute('1', { task_id: task.id }, undefined, undefined, { cwd: tmp });
+    const resultResult = await resultTool.execute('2', { task_id: task.id }, undefined, undefined, { cwd: tmp });
+
+    expect(() => JSON.stringify(statusResult)).not.toThrow();
+    expect(() => JSON.stringify(resultResult)).not.toThrow();
+    expect(statusResult.details.task.error).toBe('provider api error');
+    expect(resultResult.details.task.error).toBe('provider api error');
+    expect(statusResult.details.task.error_metadata).toMatchObject({ category: 'serialization_failure', version: 1 });
+    expect(resultResult.details.task.error_metadata).toMatchObject({ category: 'serialization_failure', version: 1 });
+  });
+
+  it('includes only bounded structured error summaries in background completion details', () => {
+    const sendMessage = vi.fn();
+    const task = {
+      id: 'subtask_background_failure',
+      agent: 'analyst',
+      status: 'failed',
+      mode: 'background',
+      error: 'provider api error',
+      model: 'mock/model',
+      effort: 'high',
+      error_metadata: {
+        category: 'provider_api_error',
+        message: 'Authorization: Bearer sk-fake-secret-token fake.user@example.com /tmp/fake-private.txt',
+        partial_result_available: true,
+        details: {
+          provider_code: '429',
+          auth_header: 'Authorization: Bearer sk-fake-secret-token',
+          prompt: 'SYSTEM: hidden prompt body',
+          file_path: '/tmp/fake-private.txt',
+          nested_payload: JSON.stringify({ transcript: 'SECRET_FILE_BODY_DO_NOT_SHOW' }),
+        },
+        last_activity: 'USER: hidden prompt body /tmp/fake-private.txt',
+        usage_at_failure: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 5, contextTokens: 6, turns: 7 },
+        task_id: 'subtask_background_failure',
+        parent_session_id: 'parent-session-secret',
+      },
+    };
+
+    sendSubagentCompletionMessage({ sendMessage }, task);
+
+    const payload = sendMessage.mock.calls[0][0];
+    expect(payload.details.full_result).toBe('provider api error');
+    expect(payload.details.task.error).toBe('provider api error');
+    expect(payload.details.task.error_metadata).toMatchObject({
+      version: 1,
+      category: 'provider_api_error',
+      retryable: true,
+      code: 'provider_api_error',
+      partial_result_available: true,
+      details: { provider_code: '429' },
+    });
+    expect(payload.details.task.error_metadata.message).toBeUndefined();
+    expect(payload.details.task.error_metadata.last_activity).toBeUndefined();
+    expect(payload.details.task.error_metadata.usage_at_failure).toBeUndefined();
+    expect(payload.details.task.error_metadata.task_id).toBeUndefined();
+    expect(payload.details.task.error_metadata.parent_session_id).toBeUndefined();
+    const serialized = JSON.stringify(payload.details.task.error_metadata);
+    expect(serialized).not.toContain('sk-fake-secret-token');
+    expect(serialized).not.toContain('fake.user@example.com');
+    expect(serialized).not.toContain('/tmp/fake-private.txt');
+    expect(serialized).not.toContain('hidden prompt body');
+    expect(serialized).not.toContain('SECRET_FILE_BODY_DO_NOT_SHOW');
   });
 
   it('lists only current-session subagent tasks by default', async () => {

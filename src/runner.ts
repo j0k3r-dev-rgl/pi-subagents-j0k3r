@@ -2,8 +2,9 @@ import { writeSubagentsDebugLog } from './debug.js';
 import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import { consumeLatestInteractionRequest, interactionRequestFromCandidate, sanitizeInteractionTransportText } from './interaction-channel.js';
 import { boundThreadSnapshot, registerSubagentRuntimeToolDefinition } from './thread-view.js';
+import { SubagentStructuredError, classifyAssistantFailure, classifyFallbackFailure, classifyThrownError, normalizeErrorMetadata } from './error-metadata.js';
 import type { SubagentInteractionRequest } from './interaction-channel.js';
-import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentRunner, SubagentsConfig, UsageStats, ThinkingEffort, SubagentThreadItem, SubagentThreadSnapshot, SubagentToolItem, SubagentToolResultPayload } from './types.js';
+import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentRunner, SubagentsConfig, UsageStats, ThinkingEffort, SubagentThreadItem, SubagentThreadSnapshot, SubagentToolItem, SubagentToolResultPayload, SubagentErrorMetadata } from './types.js';
 
 function modelLabel(model: any): string | undefined {
   if (!model) return undefined;
@@ -554,23 +555,55 @@ async function promptWithInactivity(
     const thread_snapshot = snapshotBuilder.finalize(session.messages ?? []);
     debugLog(cwd, 'runner_final_snapshot', { source: thread_snapshot?.source, items: thread_snapshot?.items.map((item) => ({ type: item.type, label: (item as any).label, name: (item as any).name, status: (item as any).status, assistantContent: item.type === 'assistant' ? item.message.content.map((part: any) => part.type) : undefined })) });
     if (stalled) {
-      const message = `Subagent stalled for ${stallTimeoutMs}ms without final response.`;
-      transcript += `\n\n# subagent failure\n\n${message}`;
-      onActivity?.({ message: `failed: ${message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
-      throw new NonRetryableSubagentError(message);
+      const metadata = normalizeErrorMetadata({
+        category: 'stall_timeout',
+        phase: 'runner_session',
+        message: `Subagent stalled for ${stallTimeoutMs}ms without final response.`,
+        partial_result_available: Boolean(output.trim() || thread_snapshot?.items?.length),
+        details: { stall_timeout_ms: String(stallTimeoutMs) },
+      });
+      transcript += `\n\n# subagent failure\n\n${metadata.message}`;
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      throw new SubagentStructuredError(metadata);
     }
     if (promptError) throw promptError;
+    const assistantFailure = lastAssistantFailure(session.messages ?? []);
+    if (assistantFailure) {
+      const metadata = classifyAssistantFailure({
+        ...assistantFailure,
+        sawToolActivity,
+      });
+      if (metadata) {
+        transcript += `\n\n# subagent failure\n\n${metadata.message}`;
+        onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+        throw new SubagentStructuredError(metadata);
+      }
+    }
     const messageText = collectAssistantText(session.messages ?? []);
     const streamedFallback = sawToolActivity ? '' : output.trim();
     const collected = sanitizeInteractionTransportText(messageText || streamedFallback);
     if (!collected.trim()) {
-      const message = sawToolActivity
-        ? 'Subagent completed tool execution but did not produce a final response.'
-        : 'Subagent finished without a final response.';
-      transcript += `\n\n# subagent failure\n\n${message}`;
-      onActivity?.({ message: `failed: ${message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
-      const error = sawToolActivity ? new NonRetryableSubagentError(message) : new Error(message);
-      throw error;
+      const toolNames = failingToolNames(thread_snapshot);
+      const metadata = toolNames.length
+        ? normalizeErrorMetadata({
+            category: 'tool_failure',
+            phase: 'tool_execution',
+            message: 'Subagent terminated after tool failure without a final response.',
+            partial_result_available: false,
+            source: { tool: toolNames[0], operation: 'tool_execution' },
+            details: { tool_names: toolNames.join(', '), tool_status: 'failed' },
+          })
+        : classifyAssistantFailure({ sawToolActivity }) ?? normalizeErrorMetadata({
+            category: sawToolActivity ? 'empty_response_after_tools' : 'empty_response_no_tools',
+            phase: 'assistant_final',
+            message: sawToolActivity
+              ? 'Subagent completed tool execution but did not produce a final response.'
+              : 'Subagent finished without a final response.',
+            partial_result_available: false,
+          });
+      transcript += `\n\n# subagent failure\n\n${metadata.message}`;
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      throw new SubagentStructuredError(metadata);
     }
     transcript += `\n\n# final assistant text\n\n${collected}`;
     onActivity?.({ message: 'collected final response', output: collected, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
@@ -647,6 +680,37 @@ function selectedModel(input: { ctx: any; definition: SubagentDefinition; profil
   return resolved;
 }
 
+function providerFromModel(model: any): string | undefined {
+  return typeof model?.provider === 'string' ? model.provider : undefined;
+}
+
+function structuredMetadataFromError(error: unknown, context: { provider?: string; model?: string; operation?: string; phase?: 'runner_invoke' | 'runner_session' | 'assistant_final' | 'tool_execution' }): SubagentErrorMetadata {
+  if (error instanceof SubagentStructuredError) return error.error_metadata;
+  return classifyThrownError(error, context);
+}
+
+function lastAssistantFailure(messages: any[]): { stopReason?: string; errorMessage?: string } | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role !== 'assistant') continue;
+    if (message?.stopReason === 'error' || typeof message?.errorMessage === 'string') {
+      return { stopReason: message.stopReason, errorMessage: message.errorMessage };
+    }
+  }
+  return undefined;
+}
+
+function failingToolNames(snapshot?: SubagentThreadSnapshot): string[] {
+  if (!snapshot?.items?.length) return [];
+  const names = new Set<string>();
+  for (const item of snapshot.items) {
+    if (item.type === 'tool' && item.status === 'failed' && item.name) names.add(item.name);
+    if (item.type === 'tool_result' && item.result?.isError && item.name) names.add(item.name);
+    if (item.type === 'bash' && item.status === 'failed') names.add('bash');
+  }
+  return [...names].slice(0, 3);
+}
+
 export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, onActivity }) => {
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
@@ -665,6 +729,15 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
       const effectiveSystemPrompt = typeof session.systemPrompt === 'string' ? session.systemPrompt : systemPrompt;
       const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(session, prompt, config.stall_timeout_ms, signal, onActivity, context, cwd, effectiveSystemPrompt, taskId);
       return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt };
+    } catch (error) {
+      throw error instanceof SubagentStructuredError
+        ? error
+        : new SubagentStructuredError(structuredMetadataFromError(error, {
+            phase: 'runner_invoke',
+            provider: providerFromModel(model),
+            model: modelLabel(model),
+            operation: 'session.prompt',
+          }));
     } finally {
       unregisterInteractionSession();
     }
@@ -675,14 +748,28 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
     return { result, usage, thread_snapshot, interaction_request, system_prompt, model: modelLabel(preferred) ?? modelRefLabel(profile.model.value), effort, fallback_used: false };
   } catch (error) {
     if (signal.aborted) throw new Error('Subagent was aborted');
-    if (isNonRetryableSubagentError(error)) throw error;
     const preferredLabel = modelLabel(preferred) ?? modelRefLabel(profile.model.value) ?? 'unknown';
     const currentLabel = modelLabel(current) ?? 'unknown';
+    const primaryFailure = structuredMetadataFromError(error, {
+      phase: isNonRetryableSubagentError(error) ? 'runner_session' : 'runner_invoke',
+      provider: providerFromModel(preferred),
+      model: preferredLabel,
+      operation: 'session.prompt',
+    });
     onActivity?.({ message: `failed/stalled on ${preferredLabel}; falling back to ${currentLabel}`, effort });
-    const message = error instanceof Error ? error.message : String(error);
-    ctx?.ui?.notify?.(`Subagent ${definition.name} failed/stalled on selected model ${preferredLabel}: ${message}. Falling back to current model ${currentLabel}.`, 'warning');
-    if (!current || current === preferred) throw new Error(`Subagent ${definition.name} failed on selected model ${preferredLabel}: ${message}`);
-    const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(current);
-    return { result, usage, thread_snapshot, interaction_request, system_prompt, model: currentLabel, effort, fallback_used: true };
+    ctx?.ui?.notify?.(`Subagent ${definition.name} failed/stalled on selected model ${preferredLabel}: ${primaryFailure.message}. Falling back to current model ${currentLabel}.`, 'warning');
+    if (!current || current === preferred) throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure));
+    if (isNonRetryableSubagentError(error)) throw new SubagentStructuredError(primaryFailure);
+    try {
+      const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(current);
+      return { result, usage, thread_snapshot, interaction_request, system_prompt, model: currentLabel, effort, fallback_used: true };
+    } catch (fallbackError) {
+      throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure, structuredMetadataFromError(fallbackError, {
+        phase: 'runner_invoke',
+        provider: providerFromModel(current),
+        model: currentLabel,
+        operation: 'session.prompt',
+      })));
+    }
   }
 };

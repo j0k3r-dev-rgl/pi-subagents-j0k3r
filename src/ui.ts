@@ -1,5 +1,5 @@
 import { isValidThreadSnapshot, renderThreadBody } from './thread-view.js';
-import type { SubagentTask, SubagentThreadRenderContext, UsageStats } from './types.js';
+import type { SubagentTask, SubagentThreadRenderContext, SubagentThreadSnapshot, UsageStats } from './types.js';
 
 function clip(text: string | undefined, limit: number): string {
   if (!text) return '';
@@ -54,6 +54,20 @@ function mouseWheelDelta(data: string): -1 | 1 | undefined {
   const button = sgr || urxvt ? Number((sgr ?? urxvt)![1]) : data.startsWith('\u001b[M') && data.length >= 6 ? data.charCodeAt(3) - 32 : undefined;
   if (button === undefined || !Number.isFinite(button) || (button & 64) === 0) return undefined;
   return (button & 1) === 0 ? -1 : 1;
+}
+
+function normalizeTerminalErrorText(text: string | undefined): string {
+  return text?.replace(/\s+/g, ' ').trim().toLowerCase() ?? '';
+}
+
+function hasEquivalentSnapshotError(snapshot: SubagentThreadSnapshot, errorText: string): boolean {
+  const normalized = normalizeTerminalErrorText(errorText);
+  if (!normalized) return false;
+  return snapshot.items.some((item) => {
+    if (item.type === 'error') return normalizeTerminalErrorText(item.text) === normalized;
+    if (item.type === 'assistant') return normalizeTerminalErrorText(item.message.errorMessage) === normalized;
+    return false;
+  });
 }
 
 export class SubagentsHistoryPanel {
@@ -388,6 +402,9 @@ export class SubagentsHistoryPanel {
         toolOutputExpanded: this.toolOutputExpanded,
       });
       lines = rendered.length ? rendered : [''];
+      if ((task.status === 'failed' || task.status === 'cancelled') && task.error && !hasEquivalentSnapshotError(task.thread_snapshot, task.error)) {
+        lines = [...lines, '', '# error', task.error];
+      }
     } else {
       lines = [this.executionFlowFor(task)];
     }

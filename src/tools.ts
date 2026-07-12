@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import { readSubagentsConfig } from './config.js';
+import { safeErrorMetadataDetails } from './error-metadata.js';
 import type { SubagentManager } from './manager.js';
 import type { SubagentTask } from './types.js';
 
@@ -228,14 +229,21 @@ function sessionIdFromToolContext(ctx: any): string | undefined {
   return typeof file === 'string' && file.length > 0 ? file : undefined;
 }
 
-function compactTaskForToolResult(task: SubagentTask): SubagentTask {
-  const { thread_snapshot: _threadSnapshot, ...compact } = task;
-  return compact;
+function compactErrorMetadataForDetails(task: Pick<SubagentTask, 'error_metadata'>): Record<string, unknown> | undefined {
+  if (!task.error_metadata) return undefined;
+  return safeErrorMetadataDetails(task.error_metadata as any);
 }
 
-function compactTaskWithoutFinalText(task: SubagentTask): SubagentTask {
-  const { thread_snapshot: _threadSnapshot, transcript: _transcript, result: _result, error: _error, ...compact } = task;
-  return compact;
+function compactTaskForToolResult(task: SubagentTask): Record<string, any> {
+  const { thread_snapshot: _threadSnapshot, error_metadata: _errorMetadata, ...compact } = task;
+  const error_metadata = compactErrorMetadataForDetails(task);
+  return error_metadata ? { ...compact, error_metadata } : compact;
+}
+
+function compactTaskWithoutFinalText(task: SubagentTask): Record<string, any> {
+  const { thread_snapshot: _threadSnapshot, transcript: _transcript, result: _result, error: _error, error_metadata: _errorMetadata, ...compact } = task;
+  const error_metadata = compactErrorMetadataForDetails(task);
+  return error_metadata ? { ...compact, error_metadata } : compact;
 }
 
 function compactResultDetails<T extends Record<string, any>>(details: T): T {
@@ -471,12 +479,12 @@ export function registerSubagentTools(pi: any, manager: SubagentManager): void {
         const cwd = ctx?.cwd ?? process.cwd();
         const tasks = manager.listSessionTasks(cwd, sessionIdFromToolContext(ctx));
         const compactTasks = tasks.map(compactTaskWithoutFinalText);
-        return ok(formatTaskListSummary(compactTasks), { tasks: compactTasks });
+        return ok(formatTaskListSummary(compactTasks as SubagentTask[]), { tasks: compactTasks });
       } catch (e) { return fail(e); }
     },
     renderResult(result: any, { expanded }: any, theme: any) {
       const tasks = Array.isArray(result?.details?.tasks) ? result.details.tasks : [];
-      const text = formatTaskListRender(tasks, Boolean(expanded));
+      const text = formatTaskListRender(tasks as SubagentTask[], Boolean(expanded));
       return textComponent(expanded ? text : (theme.fg?.('dim', text) ?? text));
     },
   });

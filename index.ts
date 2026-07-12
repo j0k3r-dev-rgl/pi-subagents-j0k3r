@@ -4,6 +4,7 @@ import { registerSubagentTools, triggerClaudeBackgroundHandoff } from './src/too
 import { runSubagentModelsCommand } from './src/model-profiles-ui.js';
 import { SubagentsHistoryPanel } from './src/ui.js';
 import { createSubagentsRenderLogger } from './src/render-debug.js';
+import { safeErrorMetadataDetails } from './src/error-metadata.js';
 import type { SubagentTask } from './src/types.js';
 
 type ClaudeBackgroundWidgetEntry = {
@@ -317,6 +318,11 @@ export function completionMessage(task: any): string {
   ].join('\n');
 }
 
+function safeCompletionErrorMetadata(task: any): Record<string, unknown> | undefined {
+  if (!task?.error_metadata) return undefined;
+  return safeErrorMetadataDetails(task.error_metadata as any);
+}
+
 export function sendSubagentCompletionMessage(pi: any, task: any): void {
   pi.sendMessage?.({
     customType: 'subagent-completion',
@@ -334,6 +340,7 @@ export function sendSubagentCompletionMessage(pi: any, task: any): void {
         usage: task.usage,
         result: task.result,
         error: task.error,
+        error_metadata: safeCompletionErrorMetadata(task),
       },
     },
   }, {

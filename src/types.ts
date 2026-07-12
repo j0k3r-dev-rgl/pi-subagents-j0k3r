@@ -84,6 +84,59 @@ export type UsageStats = {
   turns: number;
 };
 
+export type SubagentErrorCategory =
+  | 'total_timeout'
+  | 'stall_timeout'
+  | 'cancelled'
+  | 'empty_response_no_tools'
+  | 'empty_response_after_tools'
+  | 'context_overflow'
+  | 'provider_api_error'
+  | 'provider_auth_error'
+  | 'provider_rate_limit'
+  | 'provider_network_error'
+  | 'tool_failure'
+  | 'fallback_failed'
+  | 'unknown_fallback'
+  | 'malformed_thrown_value'
+  | 'serialization_failure'
+  | 'unknown';
+
+export type SubagentErrorPhase =
+  | 'runner_invoke'
+  | 'runner_session'
+  | 'assistant_final'
+  | 'tool_execution'
+  | 'manager'
+  | 'user'
+  | 'serializer';
+
+export type SubagentErrorAttemptRole = 'primary' | 'fallback';
+
+export type SubagentErrorMetadata = {
+  version: 1;
+  category: SubagentErrorCategory;
+  message: string;
+  retryable: boolean;
+  phase?: SubagentErrorPhase;
+  code?: string;
+  role?: SubagentErrorAttemptRole;
+  source?: {
+    provider?: string;
+    model?: string;
+    tool?: string;
+    operation?: string;
+  };
+  cause?: SubagentErrorMetadata;
+  attempts?: SubagentErrorMetadata[];
+  usage_at_failure?: UsageStats;
+  last_activity?: string;
+  partial_result_available: boolean;
+  task_id?: string;
+  parent_session_id?: string;
+  details?: Record<string, string>;
+};
+
 export type SubagentThreadSnapshot = {
   version: 1;
   created_at?: string;
@@ -224,6 +277,7 @@ export type SubagentTask = {
   effort_source?: ProfileValueSource;
   fallback_used?: boolean;
   error?: string;
+  error_metadata?: SubagentErrorMetadata;
   result?: string;
   thread_snapshot?: SubagentThreadSnapshot;
   interaction_request?: SubagentInteractionRequest;
@@ -241,4 +295,4 @@ export type SubagentRunner = (input: {
   signal: AbortSignal;
   effectiveProfile?: EffectiveSubagentProfile;
   onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }) => void;
-}) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string }>;
+}) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; error_metadata?: SubagentErrorMetadata; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string }>;
