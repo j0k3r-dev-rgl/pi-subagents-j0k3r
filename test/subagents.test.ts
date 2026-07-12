@@ -1722,9 +1722,13 @@ describe('subagents extension', () => {
     expect(custom).toHaveBeenCalledTimes(1);
   });
 
-  it('enables mouse tracking while the subagents history panel is open and disables it on close', async () => {
+  it('opens the subagents history panel as a full-screen overlay with bounded height', async () => {
     let subagentsCommand: any;
+    let customOptions: any;
+    let renderedLines: string[] = [];
     const writes: string[] = [];
+    const rows = Object.getOwnPropertyDescriptor(process.stdout, 'rows');
+    Object.defineProperty(process.stdout, 'rows', { configurable: true, value: 50 });
     extension({
       registerTool: () => undefined,
       registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
@@ -1733,15 +1737,21 @@ describe('subagents extension', () => {
     await subagentsCommand.handler('', {
       cwd: tmp,
       ui: {
-        custom: async (factory: any) => {
+        custom: async (factory: any, options: any) => {
+          customOptions = options;
           const component = factory({ terminal: { write: (text: string) => writes.push(text) }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, () => undefined);
+          renderedLines = component.render(80);
           component.handleInput('\x1b');
         },
       },
     });
 
+    expect(customOptions).toEqual({ overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%', margin: 0 } });
+    expect(renderedLines).toHaveLength(48);
     expect(writes.join('')).toContain('\x1b[?1000h\x1b[?1006h');
     expect(writes.join('')).toContain('\x1b[?1006l\x1b[?1000l');
+    if (rows) Object.defineProperty(process.stdout, 'rows', rows);
+    else delete (process.stdout as any).rows;
   });
 
   it('parses markdown agents with frontmatter', () => {

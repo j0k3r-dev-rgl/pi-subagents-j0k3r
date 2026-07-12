@@ -507,7 +507,7 @@ export default function subagentsExtension(pi: any): void {
             showImages: ctx?.showImages,
             imageWidthCells: ctx?.imageWidthCells,
           },
-          () => Math.max(12, process.stdout.rows || 42),
+          () => Math.max(12, (process.stdout.rows || 42) - 2),
           (id: string) => manager.getTask(id, cwd),
           selectedTaskId,
           (id: string) => manager.cancel(id, 'cancelled from subagents detail view'),
@@ -568,7 +568,7 @@ export default function subagentsExtension(pi: any): void {
           },
         };
       },
-      undefined,
+      { overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%', margin: 0 } },
     );
     } finally {
       activePanelCancelSelected = undefined;
