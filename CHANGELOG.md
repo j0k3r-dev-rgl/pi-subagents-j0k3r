@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 - 2026-07-12
+
+### Changed
+- Modularized extension composition, tools, renderers, UI, runner, and model-profile code into cohesive modules.
+- Split each registered subagent tool into a dedicated file and separated complex rendering responsibilities.
+- Reorganized monolithic tests into 24 domain-focused files with 206 passing scenarios.
+- Preserved root exports, historical deep imports, runtime behavior, tool contracts, package contents, and privacy boundaries.
+
 ## 1.2.1 - 2026-07-12
 
 ### Fixed
