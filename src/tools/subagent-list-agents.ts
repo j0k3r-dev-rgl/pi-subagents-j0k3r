@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import type { SubagentManager } from '../manager.js';
+import { formatSubagentList, renderSubagentListResult } from '../render/tools/subagent-list-agents.js';
 import { ok, fail } from './tool-response.js';
 
 export function createSubagentListAgentsTool(manager: SubagentManager) {
@@ -10,7 +11,15 @@ export function createSubagentListAgentsTool(manager: SubagentManager) {
     promptSnippet: 'List available subagents loaded from global/project agents and subagents markdown directories.',
     parameters: Type.Object({}),
     async execute(_id: string, _params: any, _signal: any, _onUpdate: any, ctx: any) {
-      try { const agents = manager.listAgents(ctx?.cwd ?? process.cwd()); return ok(`Found ${agents.length} subagent(s).`, { agents }); } catch (e) { return fail(e); }
+      try {
+        const agents = manager.listAgents(ctx?.cwd ?? process.cwd(), ctx);
+        return ok(formatSubagentList(agents, true), { agents });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+    renderResult(result: any, { expanded }: any, theme: any) {
+      return renderSubagentListResult(result, Boolean(expanded), theme);
     },
   };
 }

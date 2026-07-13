@@ -1,1 +1,1 @@
-export type { SubagentTask } from '../types.js';
+export type { ModelRef, SubagentTask, ThinkingEffort } from '../types.js';

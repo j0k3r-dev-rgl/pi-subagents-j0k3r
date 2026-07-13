@@ -175,8 +175,19 @@ export class SubagentManager {
     private onTerminalBackgroundTask?: (task: SubagentTask) => void,
   ) {}
 
-  listAgents(cwd: string) {
-    return loadSubagents(cwd).map((a) => ({ name: a.name, description: a.description, filePath: a.filePath, tools: a.tools, model: a.model, effort: a.effort }));
+  listAgents(cwd: string, ctx: any = {}) {
+    const config = readSubagentsConfig(cwd);
+    return loadSubagents(cwd).map((definition) => {
+      const profile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
+      return {
+        name: definition.name,
+        description: definition.description,
+        filePath: definition.filePath,
+        tools: definition.tools,
+        model: profile.model.value,
+        effort: profile.effort.value,
+      };
+    });
   }
 
   listTasks(cwd?: string) {
