@@ -1,0 +1,178 @@
+import { resolveEffectiveSubagentProfile } from '../profile-resolver.js';
+import { SubagentStructuredError, classifyFallbackFailure } from '../error-metadata.js';
+import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
+import { getInteractionSessionRegistry } from './interaction-session-registry.js';
+import { loadPiSdkModule } from './pi-sdk-module.js';
+import { buildPrompt } from './prompt.js';
+import { promptWithInactivity, structuredMetadataFromError } from './event-processing.js';
+
+function modelLabel(model: any): string | undefined {
+  if (!model) return undefined;
+  return `${model.provider ?? 'unknown'}/${model.id ?? model.name ?? 'unknown'}`;
+}
+
+function modelRefLabel(ref: ModelRef | undefined): string | undefined {
+  return ref ? `${ref.provider}/${ref.id}` : undefined;
+}
+
+function resolveModel(ctx: any, ref?: ModelRef): any | undefined {
+  if (!ref) return undefined;
+  return ctx?.modelRegistry?.find?.(ref.provider, ref.id);
+}
+
+const SUBAGENT_ALLOWED_EXTENSION_EVENTS = new Set(['tool_call', 'tool_result', 'user_bash']);
+
+class NonRetryableSubagentError extends Error {
+  readonly nonRetryable = true;
+}
+
+function isNonRetryableSubagentError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { nonRetryable?: unknown }).nonRetryable);
+}
+
+function isolateSubagentExtensions(base: any): any {
+  return {
+    ...base,
+    extensions: (base?.extensions ?? []).map((extension: any) => ({
+      ...extension,
+      handlers: new Map([...((extension.handlers as Map<string, unknown[]>) ?? new Map())]
+        .filter(([event]) => SUBAGENT_ALLOWED_EXTENSION_EVENTS.has(event))),
+      commands: new Map(),
+      flags: new Map(),
+      shortcuts: new Map(),
+    })),
+  };
+}
+
+type SubagentInteractionSessionMetadata = {
+  origin: 'subagent';
+  requester: { subagentName: string; description?: string; taskId?: string };
+  parent?: { piSessionId?: string };
+};
+
+function registerInteractionSubagentSession(session: any, definition: SubagentDefinition, taskId?: string, parentPiSessionId?: string): () => void {
+  const sessionId = session?.sessionManager?.getSessionId?.() ?? session?.sessionId;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return () => undefined;
+  const registry = getInteractionSessionRegistry() as Map<string, SubagentInteractionSessionMetadata>;
+  const previous = registry.get(sessionId);
+  registry.set(sessionId, {
+    origin: 'subagent',
+    requester: { subagentName: definition.name, description: definition.description, taskId },
+    parent: parentPiSessionId ? { piSessionId: parentPiSessionId } : undefined,
+  });
+  return () => {
+    if (previous) registry.set(sessionId, previous);
+    else registry.delete(sessionId);
+  };
+}
+
+async function createSession(model: any, cwd: string, tools: string[], effort: ThinkingEffort | undefined, config: SubagentsConfig, ctx: any, systemPrompt: string) {
+  const piSdk = await loadPiSdkModule();
+  const { createAgentSession, SessionManager } = piSdk;
+  const options: Record<string, unknown> = {
+    cwd,
+    model,
+    thinkingLevel: effort,
+    tools,
+    sessionManager: SessionManager.inMemory(cwd),
+  };
+  if (ctx?.authStorage) options.authStorage = ctx.authStorage;
+  if (ctx?.modelRegistry) options.modelRegistry = ctx.modelRegistry;
+  if (ctx?.settingsManager) options.settingsManager = ctx.settingsManager;
+  if (config.session_resources === 'lean') {
+    const DefaultResourceLoader = piSdk.DefaultResourceLoader;
+    const agentDir = typeof piSdk.getAgentDir === 'function' ? piSdk.getAgentDir() : undefined;
+    if (typeof DefaultResourceLoader !== 'function') throw new Error('Subagent lean session resources require DefaultResourceLoader from Pi SDK.');
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager: ctx?.settingsManager,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPrompt,
+      extensionsOverride: isolateSubagentExtensions,
+    });
+    await resourceLoader.reload();
+    options.agentDir = agentDir;
+    options.resourceLoader = resourceLoader;
+  }
+  return createAgentSession(options);
+}
+
+function selectedModel(input: { ctx: any; definition: SubagentDefinition; profile: EffectiveSubagentProfile }): any | undefined {
+  const ref = input.profile.model.value;
+  if (!ref) return input.ctx?.model;
+  if (input.profile.model.source === 'orchestrator') return input.ctx?.model ?? resolveModel(input.ctx, ref);
+  const resolved = resolveModel(input.ctx, ref);
+  if (!resolved) throw new Error(`Subagent ${input.definition.name} could not resolve selected model ${modelRefLabel(ref)} (${input.profile.model.source}).`);
+  return resolved;
+}
+
+function providerFromModel(model: any): string | undefined {
+  return typeof model?.provider === 'string' ? model.provider : undefined;
+}
+
+export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, onActivity }) => {
+  const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
+  const preferred = selectedModel({ ctx, definition, profile });
+  const current = ctx?.model;
+  const effort = profile.effort.value;
+  const tools = definition.tools?.length ? definition.tools : config.default_tools;
+  const systemPrompt = definition.instructions;
+  const prompt = buildPrompt(definition, task, context, tools);
+  onActivity?.({ message: 'orchestrator prompt prepared', prompt, system_prompt: systemPrompt, transcript: `# system prompt\n\n${systemPrompt}\n\n# delegated prompt\n\n${prompt}\n`, effort });
+
+  async function attempt(model: any) {
+    onActivity?.({ message: `starting ${definition.name} with model ${modelLabel(model) ?? 'unknown'}${effort ? ` effort ${effort}` : ''}`, prompt, system_prompt: systemPrompt, effort });
+    const { session } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt);
+    const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
+    try {
+      const effectiveSystemPrompt = typeof session.systemPrompt === 'string' ? session.systemPrompt : systemPrompt;
+      const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(session, prompt, config.stall_timeout_ms, signal, onActivity, context, cwd, effectiveSystemPrompt, taskId);
+      return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt };
+    } catch (error) {
+      throw error instanceof SubagentStructuredError
+        ? error
+        : new SubagentStructuredError(structuredMetadataFromError(error, {
+            phase: 'runner_invoke',
+            provider: providerFromModel(model),
+            model: modelLabel(model),
+            operation: 'session.prompt',
+          }));
+    } finally {
+      unregisterInteractionSession();
+    }
+  }
+
+  try {
+    const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(preferred);
+    return { result, usage, thread_snapshot, interaction_request, system_prompt, model: modelLabel(preferred) ?? modelRefLabel(profile.model.value), effort, fallback_used: false };
+  } catch (error) {
+    if (signal.aborted) throw new Error('Subagent was aborted');
+    const preferredLabel = modelLabel(preferred) ?? modelRefLabel(profile.model.value) ?? 'unknown';
+    const currentLabel = modelLabel(current) ?? 'unknown';
+    const primaryFailure = structuredMetadataFromError(error, {
+      phase: isNonRetryableSubagentError(error) ? 'runner_session' : 'runner_invoke',
+      provider: providerFromModel(preferred),
+      model: preferredLabel,
+      operation: 'session.prompt',
+    });
+    onActivity?.({ message: `failed/stalled on ${preferredLabel}; falling back to ${currentLabel}`, effort });
+    ctx?.ui?.notify?.(`Subagent ${definition.name} failed/stalled on selected model ${preferredLabel}: ${primaryFailure.message}. Falling back to current model ${currentLabel}.`, 'warning');
+    if (!current || current === preferred) throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure));
+    if (isNonRetryableSubagentError(error)) throw new SubagentStructuredError(primaryFailure);
+    try {
+      const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(current);
+      return { result, usage, thread_snapshot, interaction_request, system_prompt, model: currentLabel, effort, fallback_used: true };
+    } catch (fallbackError) {
+      throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure, structuredMetadataFromError(fallbackError, {
+        phase: 'runner_invoke',
+        provider: providerFromModel(current),
+        model: currentLabel,
+        operation: 'session.prompt',
+      })));
+    }
+  }
+};
