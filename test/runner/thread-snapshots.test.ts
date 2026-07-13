@@ -50,7 +50,7 @@ describe('subagent runner thread snapshots', () => {
         return vi.fn();
       }),
       prompt: vi.fn(async () => {
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { delta: 'streamed ' } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'streamed ' } });
         subscriber?.({ type: 'tool_execution_start', toolCallId: 'bash-1', toolName: 'bash', args: { command: 'printf hello' } });
         subscriber?.({ type: 'tool_execution_update', toolCallId: 'bash-1', toolName: 'bash', partialResult: { output: 'hello\n' } });
         subscriber?.({ type: 'tool_execution_end', toolCallId: 'bash-1', toolName: 'bash', isError: false, result: { output: largeOutput, exitCode: 0 } });
@@ -91,7 +91,7 @@ describe('subagent runner thread snapshots', () => {
         return vi.fn();
       }),
       prompt: vi.fn(async () => {
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { delta: '{"path":"openspec/changes/websearch-extension/spec.md"}' } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: '{"path":"openspec/changes/websearch-extension/spec.md"}' } });
         subscriber?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'openspec/changes/websearch-extension/spec.md' } });
         subscriber?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: 'spec body' }] } });
         return new Promise<void>((resolve) => { resolvePrompt = resolve; });
@@ -135,19 +135,34 @@ describe('subagent runner thread snapshots', () => {
     }
   });
 
-  it('logs when streamed raw tool-call json is dropped from live thread snapshots', async () => {
+  it('keeps toolcall deltas out of live assistant text while preserving native tool rows', async () => {
     let subscriber: ((event: unknown) => void) | undefined;
+    const calls = [
+      { id: 'graph-1', name: 'workspace_graph_status', args: {} },
+      { id: 'bash-1', name: 'bash', args: { command: 'ls -la', timeout: 10 } },
+    ];
     const session = {
       subscribe: vi.fn((callback: (event: unknown) => void) => {
         subscriber = callback;
         return vi.fn();
       }),
       prompt: vi.fn(async () => {
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { delta: '{"query":"subagent renderer raw tool json","limit":3}' } });
-        subscriber?.({ type: 'tool_execution_start', toolCallId: 'mem-1', toolName: 'memory_search', args: { query: 'subagent renderer raw tool json', limit: 3 } });
-        subscriber?.({ type: 'tool_execution_end', toolCallId: 'mem-1', toolName: 'memory_search', isError: false, result: { content: [{ type: 'text', text: 'Found 3 memory result(s).' }] } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Starting codebase inventory' } });
+        for (const call of calls) {
+          subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_start' } });
+          subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: JSON.stringify(call.args) } });
+          subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end' } });
+        }
+        for (const call of calls) {
+          subscriber?.({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: call.args });
+          subscriber?.({ type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, isError: false, result: { content: [{ type: 'text', text: 'done' }] } });
+        }
       }),
-      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'final answer' }] }],
+      messages: [{ role: 'assistant', content: [
+        { type: 'thinking', thinking: 'Starting codebase inventory' },
+        ...calls.map((call) => ({ type: 'toolCall', id: call.id, name: call.name, arguments: call.args })),
+        { type: 'text', text: 'final answer' },
+      ] }],
       dispose: vi.fn(async () => undefined),
     };
 
@@ -155,21 +170,22 @@ describe('subagent runner thread snapshots', () => {
     fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.pi', 'subagents.json'), JSON.stringify({ debug: true }));
     try {
-      const { activities } = await runWithSession(session, cwd);
-      const afterToolStart = activities.find((activity) => activity.message === 'memory_search');
-      expect(afterToolStart?.thread_snapshot).toBeDefined();
-      const visibleAssistantText = afterToolStart?.thread_snapshot?.items
+      const { result, activities } = await runWithSession(session, cwd);
+      expect(activities.filter((activity) => activity.message === 'streaming response')).toHaveLength(0);
+      const afterToolStart = activities.find((activity) => activity.message?.startsWith('workspace_graph_status'));
+      const assistantContent = afterToolStart?.thread_snapshot?.items
         .filter((item: any) => item.type === 'assistant')
         .flatMap((item: any) => item.message.content.map((part: any) => part.text ?? part.thinking ?? ''))
         .join('\n') ?? '';
-      expect(visibleAssistantText).not.toContain('{"query"');
-      expect(afterToolStart?.thread_snapshot?.items).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'tool', name: 'memory_search', status: 'running', arguments: expect.objectContaining({ query: 'subagent renderer raw tool json' }) }),
+      expect(assistantContent).toContain('Starting codebase inventory');
+      expect(assistantContent).not.toContain('{"command"');
+      expect(afterToolStart?.transcript).not.toContain('{"command"');
+      expect(result.thread_snapshot?.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'tool', name: 'workspace_graph_status', arguments: {} }),
+        expect.objectContaining({ type: 'bash', command: 'ls -la', status: 'completed' }),
       ]));
       const log = fs.readFileSync(path.join(cwd, '.pi', 'subagents-debug.log'), 'utf8');
-      expect(log).toContain('live_raw_tool_json_dropped');
-      expect(log).toContain('memory_search');
-      expect(log).toContain('query');
+      expect(log).toContain('"assistantEventType":"toolcall_delta"');
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -249,7 +265,7 @@ describe('subagent runner thread snapshots', () => {
       }),
       prompt: vi.fn(async () => {
         subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking through the file plan' } });
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { delta: 'draft text that should not replace final' } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'draft text that should not replace final' } });
       }),
       messages: [{ role: 'assistant', content: [{ type: 'text', text: 'final answer after thinking' }] }],
       dispose: vi.fn(async () => undefined),
@@ -276,7 +292,7 @@ describe('subagent runner thread snapshots', () => {
         return vi.fn();
       }),
       prompt: vi.fn(async () => {
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { delta: 'draft text' } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'draft text' } });
       }),
       messages: [{ role: 'assistant', content: 'final from messages' }],
       dispose: vi.fn(async () => undefined),

@@ -64,11 +64,9 @@ function formatToolCall(name: string, args: any): string {
 
 function eventTranscript(event: any): string {
   const messageEvent = event?.assistantMessageEvent;
-  const delta = messageEvent?.type !== 'thinking_delta' && typeof messageEvent?.delta === 'string'
+  const delta = messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
     ? messageEvent.delta
-    : messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
-      ? messageEvent.delta
-      : undefined;
+    : undefined;
   if (event?.type === 'message_update' && typeof delta === 'string') return sanitizeInteractionTransportText(delta);
 
   if (event?.type === 'tool_execution_start') {
@@ -188,11 +186,9 @@ export async function promptWithInactivity(
       }
     }
     const messageEvent = event?.assistantMessageEvent;
-    const delta = messageEvent?.type !== 'thinking_delta' && typeof messageEvent?.delta === 'string'
+    const delta = messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
       ? messageEvent.delta
-      : messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
-        ? messageEvent.delta
-        : undefined;
+      : undefined;
     if (event?.type === 'message_end' && event.message?.role === 'assistant') usage = addUsage(usage, event.message.usage);
     if (event?.type === 'message_update' && typeof delta === 'string') {
       output += sanitizeInteractionTransportText(delta);

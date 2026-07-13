@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1 - 2026-07-13
+
+### Fixed
+- Fixed `/subagents` live rendering so `toolcall_delta` argument JSON is no longer displayed as assistant text before native tool cards.
+- Preserved streamed thinking output while routing only `text_delta` events into assistant text, matching Pi's main-thread rendering behavior.
+
 ## 1.3.0 - 2026-07-12
 
 ### Changed

@@ -103,12 +103,8 @@ export class ThreadSnapshotBuilder {
   update(event: any): void {
     const now = new Date().toISOString();
     const messageEvent = event?.assistantMessageEvent;
-    const textDelta = event?.type === 'message_update' && messageEvent?.type !== 'thinking_delta'
-      ? typeof messageEvent?.delta === 'string'
-        ? messageEvent.delta
-        : messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
-          ? messageEvent.delta
-          : undefined
+    const textDelta = event?.type === 'message_update' && messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
+      ? messageEvent.delta
       : undefined;
     const thinkingDelta = event?.type === 'message_update' && messageEvent?.type === 'thinking_delta' && typeof messageEvent.delta === 'string'
       ? messageEvent.delta
