@@ -1,6 +1,6 @@
 import { writeSubagentsDebugLog } from '../debug.js';
 import { sanitizeInteractionTransportText } from '../interaction-channel.js';
-import { boundThreadSnapshot } from '../thread-view.js';
+import { boundThreadSnapshot, isValidThreadSnapshot } from '../thread-view.js';
 import type { SubagentThreadItem, SubagentThreadSnapshot, SubagentToolItem, SubagentToolResultPayload } from '../types.js';
 
 function shortJson(value: unknown, limit = 900): string {
@@ -81,15 +81,27 @@ function parseRawToolJson(text: string): { keys: string[]; kind: string } | unde
 
 export class ThreadSnapshotBuilder {
   private cwd?: string;
-  private readonly createdAt = new Date().toISOString();
+  private readonly createdAt: string;
   private readonly items: SubagentThreadItem[] = [];
   private readonly toolIndex = new Map<string, number>();
+  private readonly currentAttemptStart: number;
   private streamingAssistantSequence = 0;
 
-  constructor(prompt?: string, context?: string, cwd?: string) {
+  constructor(
+    prompt?: string,
+    context?: string,
+    cwd?: string,
+    seedSnapshot?: SubagentThreadSnapshot,
+    promptLabel: 'delegated_task' | 'continuation' = 'delegated_task',
+    attempt = 1,
+  ) {
     this.cwd = cwd;
-    if (prompt?.trim()) this.items.push({ type: 'user', id: 'delegated-prompt', label: 'delegated_task', text: truncateSnapshotText(prompt) ?? '' });
-    if (context?.trim()) this.items.push({ type: 'user', id: 'delegated-context', label: 'context', text: truncateSnapshotText(context) ?? '' });
+    this.createdAt = seedSnapshot?.created_at ?? new Date().toISOString();
+    if (isValidThreadSnapshot(seedSnapshot)) this.items.push(...seedSnapshot.items.map((item) => structuredClone(item)));
+    this.currentAttemptStart = this.items.length;
+    this.items.push({ type: 'attempt', id: `attempt-${attempt}`, attempt });
+    if (promptLabel !== 'continuation' && context?.trim()) this.items.push({ type: 'user', id: 'delegated-context', label: 'context', text: truncateSnapshotText(context) ?? '' });
+    if (prompt?.trim()) this.items.push({ type: 'user', id: promptLabel === 'continuation' ? `continuation-prompt-${attempt}` : 'delegated-prompt', label: promptLabel, text: truncateSnapshotText(prompt) ?? '' });
   }
 
   update(event: any): void {
@@ -156,13 +168,16 @@ export class ThreadSnapshotBuilder {
 
   finalize(messages: any[]): SubagentThreadSnapshot | undefined {
     const messageItems = assistantItemsFromMessages(messages);
-    const initialItems: SubagentThreadItem[] = this.items.filter((item) => item.type === 'user');
+    const priorItems = this.items.slice(0, this.currentAttemptStart);
+    const currentItems = this.items.slice(this.currentAttemptStart);
+    const initialItems: SubagentThreadItem[] = currentItems.filter((item) => item.type === 'attempt' || item.type === 'user');
     const finalMessagesAlreadyHaveThinking = messageItems.some((item) => item.type === 'assistant' && item.message.content.some((part) => part.type === 'thinking'));
-    const eventItems = this.items
-      .filter((item) => item.type !== 'user')
+    const eventItems = currentItems
+      .filter((item) => item.type !== 'attempt' && item.type !== 'user')
       .map((item) => this.finalizeEventItem(item, messageItems.length > 0, finalMessagesAlreadyHaveThinking))
       .filter((item): item is SubagentThreadItem => Boolean(item));
-    const items: SubagentThreadItem[] = [...initialItems, ...(messageItems.length ? interleaveMessagesWithToolRows(messageItems, eventItems) : eventItems)];
+    const currentAttemptItems = [...initialItems, ...(messageItems.length ? interleaveMessagesWithToolRows(messageItems, eventItems) : eventItems)];
+    const items: SubagentThreadItem[] = [...priorItems, ...currentAttemptItems];
     const source = messageItems.length && eventItems.length ? 'mixed' : messageItems.length ? 'session_messages' : 'events';
     return boundThreadSnapshot({ version: 1, created_at: this.createdAt, updated_at: new Date().toISOString(), source, items }, { textLimit: SNAPSHOT_TEXT_LIMIT });
   }

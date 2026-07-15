@@ -1,13 +1,14 @@
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { loadSubagents, readSubagentsConfig } from './config.js';
+import { loadSubagents, parseEffort, parseModel, readSubagentsConfig } from './config.js';
 import { writeSubagentsDebugLog } from './debug.js';
 import { sdkSubagentRunner } from './runner.js';
 import { SubagentHistoryStore } from './history.js';
 import { publishInteractionResponse, sanitizeInteractionTransportText } from './interaction-channel.js';
 import { classifyThrownError, deriveErrorString, enrichErrorMetadata, normalizeErrorMetadata, SubagentStructuredError } from './error-metadata.js';
-import { resolveEffectiveSubagentProfile } from './profile-resolver.js';
+import { profileSourceLabel, resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
-import type { ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
+import type { EffectiveSubagentProfile, ModelRef, SubagentContinueInput, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
 
 function nowIso(): string { return new Date().toISOString(); }
 function taskId(agent: string): string { return `subtask_${agent}_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`; }
@@ -72,6 +73,29 @@ function enrichTerminalMetadata(task: SubagentTask, parentSessionId: string | un
     task_id: task.id,
     parent_session_id: parentSessionId,
   });
+}
+
+function isTerminalStatus(status: SubagentTask['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function resolveContinuationProfile(definition: SubagentDefinition, config: SubagentsConfig, ctx: any, input: SubagentContinueInput): EffectiveSubagentProfile {
+  const resolved = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
+  const model = input.model === undefined
+    ? resolved.model
+    : (() => {
+        const parsed = parseModel(input.model);
+        if (!parsed) throw new Error(`Invalid model override for continuation: ${input.model}`);
+        return { value: parsed, source: 'orchestrator' as const, label: profileSourceLabel('orchestrator', parsed, (value) => `${value.provider}/${value.id}`) };
+      })();
+  const effort = input.effort === undefined
+    ? resolved.effort
+    : (() => {
+        const parsed = parseEffort(input.effort);
+        if (!parsed) throw new Error(`Invalid effort override for continuation: ${input.effort}`);
+        return { value: parsed, source: 'orchestrator' as const, label: profileSourceLabel('orchestrator', parsed, String) };
+      })();
+  return { ...resolved, model, effort };
 }
 
 function interactionPromptMessage(request: SubagentInteractionRequest): string {
@@ -160,6 +184,23 @@ const SESSION_TASK_CACHE_MS = 1500;
 
 type PendingRecord = { cwd: string; task: SubagentTask; activity: string; timer: NodeJS.Timeout };
 
+type LaunchAttemptInput = {
+  definition: SubagentDefinition;
+  taskText: string;
+  context: string | undefined;
+  task: SubagentTask;
+  ctx: any;
+  config: SubagentsConfig;
+  effectiveProfile: EffectiveSubagentProfile;
+  parentSessionId: string | undefined;
+  nestedSessionPath?: string;
+  previousSnapshot?: SubagentTask['thread_snapshot'];
+  continuationPrompt?: string;
+  parentSignal?: AbortSignal;
+  onTaskUpdate?: () => void;
+  limiter: ReturnType<typeof createLimiter>;
+};
+
 export class SubagentManager {
   private tasks = new Map<string, SubagentTask>();
   private taskCwds = new Map<string, string>();
@@ -168,6 +209,7 @@ export class SubagentManager {
   private pendingRecords = new Map<string, PendingRecord>();
   private pendingUpdates = new Map<string, NodeJS.Timeout>();
   private sessionTaskCache = new Map<string, { expiresAt: number; tasks: SubagentTask[] }>();
+  private runnerSettlements = new Map<string, Promise<void>>();
 
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
@@ -258,6 +300,7 @@ export class SubagentManager {
     if (!agents.length) throw new Error('subagent_run requires agent or agents.');
     const mode = input.mode ?? 'task';
     const config = readSubagentsConfig(cwd);
+
     const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
     const limiter = this.limiter(cwd, config.max_concurrency);
     let ids: string[] = [];
@@ -274,10 +317,78 @@ export class SubagentManager {
     return { mode, task_ids: ids, results: ids.map((id) => this.tasks.get(id)!) };
   }
 
+  async continueTask(
+    input: SubagentContinueInput,
+    ctx: any,
+    parentSignal?: AbortSignal,
+    onTaskUpdate?: (tasks: SubagentTask[]) => void,
+  ): Promise<{ mode: 'task' | 'background'; task_ids: string[]; results?: SubagentTask[] }> {
+    const cwd = ctx?.cwd ?? process.cwd();
+    const existing = this.getTask(input.task_id, cwd);
+    if (!existing) throw new Error(`Subagent task not found: ${input.task_id}`);
+    if (!isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
+    await this.awaitRunnerCleanup(existing.id);
+    const latest = this.getTask(input.task_id, cwd) ?? existing;
+    if (!isTerminalStatus(latest.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
+    if (!latest.nested_session_path || !fs.existsSync(latest.nested_session_path)) {
+      throw new Error(`Subagent task ${input.task_id} is missing or unreadable nested session file: ${latest.nested_session_path ?? 'unknown'}`);
+    }
+
+    const config = readSubagentsConfig(cwd);
+    const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
+    const definition = definitions.get(latest.agent.toLowerCase());
+    if (!definition) throw new Error(`Subagent definition not found for continuation: ${latest.agent}`);
+    try { this.history.upsertTask(cwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
+    const effectiveProfile = resolveContinuationProfile(definition, config, ctx, input);
+    const continuationPrompt = sanitizeInteractionTransportText(input.prompt);
+    const task: SubagentTask = {
+      ...latest,
+      status: 'queued',
+      attempt: (latest.attempt ?? 1) + 1,
+      last_activity_at: nowIso(),
+      last_activity: 'queued',
+      started_at: undefined,
+      ended_at: undefined,
+      output_preview: undefined,
+      continuation_prompt: continuationPrompt,
+      transcript: undefined,
+      usage: undefined,
+      model: modelRefLabel(effectiveProfile.model.value),
+      effort: effectiveProfile.effort.value,
+      model_source: effectiveProfile.model.source,
+      effort_source: effectiveProfile.effort.source,
+      fallback_used: undefined,
+      error: undefined,
+      error_metadata: undefined,
+      result: undefined,
+      interaction_request: undefined,
+    };
+    this.launchAttempt({
+      definition,
+      taskText: latest.task,
+      context: latest.context,
+      task,
+      ctx,
+      config,
+      effectiveProfile,
+      parentSessionId: latest.session_id,
+      nestedSessionPath: latest.nested_session_path,
+      previousSnapshot: latest.thread_snapshot,
+      continuationPrompt,
+      parentSignal,
+      onTaskUpdate: () => onTaskUpdate?.([this.tasks.get(task.id)!].filter(Boolean)),
+      limiter: this.limiter(cwd, config.max_concurrency),
+    });
+    if (task.mode === 'background') return { mode: task.mode, task_ids: [task.id] };
+    await this.wait(task.id);
+    if (parentSignal?.aborted) throw new Error('Subagent continuation aborted');
+    return { mode: task.mode, task_ids: [task.id], results: [this.tasks.get(task.id)!] };
+  }
+
   cancel(id: string, reason = 'cancelled'): SubagentTask {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Subagent task not found: ${id}`);
-    if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') return task;
+    if (isTerminalStatus(task.status)) return task;
     this.controllers.get(id)?.abort();
     task.status = 'cancelled';
     task.last_activity = task.output_preview ? `${reason}; partial output preserved` : reason;
@@ -309,13 +420,10 @@ export class SubagentManager {
     onTaskUpdate?: () => void,
     limiter = createLimiter(1),
   ): string {
-    const cwd = ctx?.cwd ?? process.cwd();
     const session_id = sessionIdFromContext(ctx);
     const effectiveProfile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
-    const id = taskId(definition.name);
-    const controller = new AbortController();
     const task: SubagentTask = {
-      id,
+      id: taskId(definition.name),
       agent: definition.name,
       mode,
       status: 'queued',
@@ -326,10 +434,20 @@ export class SubagentManager {
       model_source: effectiveProfile.model.source,
       effort_source: effectiveProfile.effort.source,
       created_at: nowIso(),
+      attempt: 1,
       session_id,
       last_activity_at: nowIso(),
       last_activity: 'queued',
     };
+    this.launchAttempt({ definition, taskText, context, task, ctx, config, effectiveProfile, parentSessionId: session_id, parentSignal, onTaskUpdate, limiter });
+    return task.id;
+  }
+
+  private launchAttempt(input: LaunchAttemptInput): void {
+    const { definition, taskText, context, task, ctx, config, effectiveProfile, parentSessionId, nestedSessionPath, previousSnapshot, continuationPrompt, parentSignal, onTaskUpdate, limiter } = input;
+    const cwd = ctx?.cwd ?? process.cwd();
+    const id = task.id;
+    const controller = new AbortController();
     this.tasks.set(id, task);
     this.taskCwds.set(id, cwd);
     this.controllers.set(id, controller);
@@ -343,6 +461,7 @@ export class SubagentManager {
       let timeout: NodeJS.Timeout | undefined;
       let timedOut = false;
       let acquired = false;
+      let activeRunnerSettlement: Promise<void> | undefined;
       try {
         await limiter.acquire();
         acquired = true;
@@ -360,24 +479,30 @@ export class SubagentManager {
             definition,
             task: taskText,
             taskId: id,
-            parentPiSessionId: session_id,
+            parentPiSessionId: parentSessionId,
             context,
             cwd,
             ctx,
             config,
             signal: controller.signal,
             effectiveProfile,
+            nested_session_path: nestedSessionPath,
+            continuation: continuationPrompt ? { prompt: continuationPrompt, attempt: task.attempt ?? 1, previous_snapshot: previousSnapshot } : undefined,
             onActivity: (activity) => {
               task.last_activity_at = nowIso();
               task.last_activity = activity.message;
               if (activity.output) task.output_preview = compactOutput(activity.output);
-              if (activity.prompt) task.prompt = sanitizeInteractionTransportText(activity.prompt);
+              if (activity.prompt) {
+                if (continuationPrompt) task.continuation_prompt = sanitizeInteractionTransportText(activity.prompt);
+                else task.prompt = sanitizeInteractionTransportText(activity.prompt);
+              }
               if (activity.system_prompt) task.system_prompt = sanitizeInteractionTransportText(activity.system_prompt);
               if (activity.transcript) task.transcript = sanitizeInteractionTransportText(activity.transcript);
               if (activity.usage) task.usage = activity.usage;
               if (activity.effort) task.effort = activity.effort;
               if (activity.thread_snapshot) task.thread_snapshot = sanitizeUnknown(activity.thread_snapshot);
               if (activity.interaction_request) task.interaction_request = activity.interaction_request;
+              if (activity.nested_session_path) task.nested_session_path = activity.nested_session_path;
               const importantActivity = activity.message === 'interaction required'
                 || Boolean(activity.interaction_request)
                 || (Boolean(activity.thread_snapshot) && !activity.message.startsWith('streaming '));
@@ -386,6 +511,7 @@ export class SubagentManager {
             },
           });
           runnerPromise.catch(() => {});
+          activeRunnerSettlement = runnerPromise.then(() => undefined, () => undefined);
           const timeoutPromise = new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               timedOut = true;
@@ -398,6 +524,8 @@ export class SubagentManager {
             else controller.signal.addEventListener('abort', () => reject(new Error('Subagent was aborted')), { once: true });
           });
           result = await Promise.race([runnerPromise, timeoutPromise, abortPromise]);
+          await activeRunnerSettlement;
+          activeRunnerSettlement = undefined;
           if (timeout) {
             clearTimeout(timeout);
             timeout = undefined;
@@ -425,6 +553,7 @@ export class SubagentManager {
           task.effort = result.effort ?? task.effort;
           task.fallback_used = result.fallback_used;
           if (result.thread_snapshot) task.thread_snapshot = sanitizeUnknown(result.thread_snapshot);
+          if (result.nested_session_path) task.nested_session_path = result.nested_session_path;
           task.interaction_request = interactionRequest;
           this.record(cwd, task, task.last_activity, true);
           this.notifyTaskUpdate(id, onTaskUpdate, true);
@@ -434,7 +563,7 @@ export class SubagentManager {
           subagentAuditLog(cwd, 'interaction_bridge_user_response', { taskId: id, agent: definition.name, requestId: interactionRequest.requestId, status: response.status });
           if (response.status === 'cancelled') throw new Error(`Subagent interaction cancelled by main user: ${interactionRequest.requestId}`);
           if (response.status === 'failed') throw new Error(`Subagent interaction failed: ${response.error ?? interactionRequest.requestId}`);
-          task.last_activity = `interaction answered by main user; retrying subagent`;
+          task.last_activity = 'interaction answered by main user; retrying subagent';
           delete task.interaction_request;
           task.last_activity_at = nowIso();
           this.record(cwd, task, task.last_activity, true);
@@ -456,6 +585,7 @@ export class SubagentManager {
         task.effort = result.effort ?? task.effort;
         task.fallback_used = result.fallback_used;
         if (result.thread_snapshot) task.thread_snapshot = sanitizeUnknown(result.thread_snapshot);
+        if (result.nested_session_path) task.nested_session_path = result.nested_session_path;
         delete task.interaction_request;
         task.ended_at = task.last_activity_at;
         this.record(cwd, task, 'completed', true);
@@ -479,7 +609,7 @@ export class SubagentManager {
           : error instanceof SubagentStructuredError
             ? error.error_metadata
             : classifyThrownError(error, { phase: 'manager' });
-        task.error_metadata = enrichTerminalMetadata(task, session_id, metadata);
+        task.error_metadata = enrichTerminalMetadata(task, parentSessionId, metadata);
         task.error = timedOut || error instanceof SubagentStructuredError
           ? deriveErrorString(task.error_metadata)
           : error instanceof Error ? error.message : String(error);
@@ -492,13 +622,21 @@ export class SubagentManager {
         if (task.mode === 'background') this.onTerminalBackgroundTask?.(task);
       } finally {
         if (timeout) clearTimeout(timeout);
+        await activeRunnerSettlement?.catch(() => undefined);
         if (acquired) limiter.release();
         parentSignal?.removeEventListener('abort', abortFromParent);
         this.controllers.delete(id);
       }
     };
-    void run();
-    return id;
+    const settlement = run().finally(() => this.runnerSettlements.delete(id));
+    this.runnerSettlements.set(id, settlement);
+    void settlement;
+  }
+
+  private async awaitRunnerCleanup(taskId: string): Promise<void> {
+    const pending = this.runnerSettlements.get(taskId);
+    if (!pending) return;
+    await pending.catch(() => undefined);
   }
 
   private cachedPersistedSessionTasks(cwd: string, sessionId: string): SubagentTask[] {
@@ -577,7 +715,7 @@ export class SubagentManager {
     while (true) {
       const task = this.tasks.get(id);
       if (!task) throw new Error(`Subagent task not found: ${id}`);
-      if (['completed', 'failed', 'cancelled'].includes(task.status)) return;
+      if (isTerminalStatus(task.status)) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }

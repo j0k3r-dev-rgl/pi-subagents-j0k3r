@@ -74,6 +74,13 @@ export type SubagentRunInput = {
   mode?: SubagentMode;
 };
 
+export type SubagentContinueInput = {
+  task_id: string;
+  prompt: string;
+  model?: string;
+  effort?: ThinkingEffort;
+};
+
 export type UsageStats = {
   input: number;
   output: number;
@@ -146,6 +153,7 @@ export type SubagentThreadSnapshot = {
 };
 
 export type SubagentThreadItem =
+  | SubagentAttemptItem
   | SubagentAssistantItem
   | SubagentUserItem
   | SubagentToolItem
@@ -154,6 +162,12 @@ export type SubagentThreadItem =
   | SubagentCustomItem
   | SubagentStatusItem
   | SubagentErrorItem;
+
+export type SubagentAttemptItem = {
+  type: 'attempt';
+  id?: string;
+  attempt: number;
+};
 
 export type SubagentAssistantItem = {
   type: 'assistant';
@@ -175,7 +189,7 @@ export type SubagentUserItem = {
   type: 'user';
   id?: string;
   text: string;
-  label?: 'delegated_task' | 'context' | 'prompt' | 'user';
+  label?: 'delegated_task' | 'continuation' | 'context' | 'prompt' | 'user';
 };
 
 export type SubagentToolResultPayload = {
@@ -261,13 +275,16 @@ export type SubagentTask = {
   task: string;
   context?: string;
   created_at: string;
+  attempt?: number;
   session_id?: string;
+  nested_session_path?: string;
   started_at?: string;
   ended_at?: string;
   last_activity_at?: string;
   last_activity?: string;
   output_preview?: string;
   prompt?: string;
+  continuation_prompt?: string;
   system_prompt?: string;
   transcript?: string;
   usage?: UsageStats;
@@ -294,5 +311,7 @@ export type SubagentRunner = (input: {
   config: SubagentsConfig;
   signal: AbortSignal;
   effectiveProfile?: EffectiveSubagentProfile;
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }) => void;
-}) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; error_metadata?: SubagentErrorMetadata; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string }>;
+  nested_session_path?: string;
+  continuation?: { prompt: string; attempt: number; previous_snapshot?: SubagentThreadSnapshot };
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string }) => void;
+}) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; error_metadata?: SubagentErrorMetadata; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string; nested_session_path?: string }>;

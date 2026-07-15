@@ -24,6 +24,9 @@ describe('subagent_cancel tool', () => {
     const cancelled = await cancelTool.execute('2', { task_id: taskId }, undefined, undefined, { cwd: env.tmp });
 
     expect(cancelled.content[0].text).toContain('cancelled');
+    expect(cancelled.content[0].text).toContain('can be resumed with `subagent_continue`');
+    expect(cancelled.content[0].text).toContain('Ask the user before resuming');
+    expect(cancelled.content[0].text).toContain('model and effort');
     expect(cancelled.details.task).toMatchObject({ id: taskId, status: 'cancelled', task: 'cancel me' });
   });
 

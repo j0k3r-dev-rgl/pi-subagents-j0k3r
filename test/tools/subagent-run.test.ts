@@ -92,6 +92,7 @@ describe('subagent_run tool', () => {
     const result = await runTool.execute('1', { agent: 'analyst', task: 'return full content', mode: 'task' }, undefined, undefined, { cwd: env.tmp });
 
     expect(result.content[0].text).toContain(rawResponse);
+    expect(result.content[0].text).not.toContain('subagent_continue');
     expect(result.details.results[0].result).toBe(rawResponse);
 
     const collapsed = runTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(90).join('\n');
@@ -112,6 +113,10 @@ describe('subagent_run tool', () => {
     const result = await runTool.execute('1', { agent: 'analyst', task: 'fail', mode: 'task' }, undefined, undefined, { cwd: env.tmp });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('failed');
+    expect(result.content[0].text).toContain('can be resumed with `subagent_continue`');
+    expect(result.content[0].text).toContain('Ask the user before resuming');
+    expect(result.content[0].text).toContain('model and effort');
+    expect(result.content[0].text).toContain('Never switch models automatically');
   });
 
   it('exposes only safe structured error summaries in subagent_run details while preserving legacy error text', async () => {

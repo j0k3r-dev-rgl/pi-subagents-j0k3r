@@ -5,6 +5,11 @@ import path from 'node:path';
 import { SubagentStructuredError, classifyFallbackFailure, classifyThrownError, deriveErrorString, normalizeErrorMetadata } from '../../src/error-metadata.js';
 import type { SubagentDefinition, SubagentErrorMetadata, SubagentsConfig } from '../../src/types.js';
 
+const sessionManagerSpies = vi.hoisted(() => ({
+  create: vi.fn(() => ({ path: '/tmp/subagent-session.jsonl' })),
+  open: vi.fn((sessionPath: string) => ({ path: sessionPath })),
+}));
+
 describe('subagent runner thread snapshots', () => {
   const definition: SubagentDefinition = {
     name: 'sdd-apply',
@@ -21,10 +26,16 @@ describe('subagent runner thread snapshots', () => {
     model_profiles: {},
   };
 
-  async function runWithSession(session: any, cwd = '/workspace') {
+  async function runWithSession(session: any, cwd = '/workspace', overrides: Record<string, unknown> = {}) {
     vi.resetModules();
+    sessionManagerSpies.create.mockClear();
+    sessionManagerSpies.open.mockClear();
     vi.doMock('@earendil-works/pi-coding-agent', () => ({
-      SessionManager: { inMemory: () => ({}) },
+      SessionManager: {
+        inMemory: () => ({}),
+        create: sessionManagerSpies.create,
+        open: sessionManagerSpies.open,
+      },
       createAgentSession: vi.fn(() => ({ session })),
     }));
     const { sdkSubagentRunner } = await import('../../src/runner.js');
@@ -36,10 +47,89 @@ describe('subagent runner thread snapshots', () => {
       ctx: { model: { provider: 'test', id: 'model' } },
       config,
       signal: new AbortController().signal,
-      onActivity: (activity) => activities.push(activity),
-    });
+      onActivity: (activity: any) => activities.push(activity),
+      ...overrides,
+    } as any);
     return { result, activities };
   }
+
+  it('creates persistent nested sessions for new tasks, reopens the exact session for continuations, and excludes earlier assistant text from the current attempt result', async () => {
+    const initialSession = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'initial answer' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const initialRun = await runWithSession(initialSession, '/workspace', { context: 'shared orchestrator context' });
+    expect(sessionManagerSpies.create).toHaveBeenCalledOnce();
+    expect(sessionManagerSpies.open).not.toHaveBeenCalled();
+    expect(initialRun.result.result).toBe('initial answer');
+    expect(initialRun.result.nested_session_path).toBe('/tmp/subagent-session.jsonl');
+    expect(initialRun.result.thread_snapshot?.items.slice(0, 3)).toEqual([
+      expect.objectContaining({ type: 'attempt', attempt: 1 }),
+      expect.objectContaining({ type: 'user', label: 'context', text: 'shared orchestrator context' }),
+      expect.objectContaining({ type: 'user', label: 'delegated_task', text: 'capture a thread snapshot' }),
+    ]);
+    expect(initialRun.result.thread_snapshot?.items.filter((item: any) => item.type === 'user' && item.label === 'context')).toHaveLength(1);
+
+    const continuationSession = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async function (this: any) {
+        this.messages = [
+          { role: 'assistant', content: [{ type: 'text', text: 'initial answer' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'continued answer' }] },
+        ];
+      }),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'initial answer' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const continued = await runWithSession(continuationSession, '/workspace', {
+      nested_session_path: '/tmp/subagent-session.jsonl',
+      continuation: {
+        prompt: 'Resume from the terminal state.',
+        attempt: 2,
+        previous_snapshot: { version: 1, source: 'events', items: [{ type: 'user', label: 'delegated_task', text: 'capture a thread snapshot' }] },
+      },
+    });
+
+    expect(sessionManagerSpies.open).toHaveBeenCalledWith('/tmp/subagent-session.jsonl', expect.any(String), '/workspace');
+    expect(continued.result.result).toBe('continued answer');
+    expect(continued.result.thread_snapshot?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'user', label: 'delegated_task', text: 'capture a thread snapshot' }),
+      expect.objectContaining({ type: 'user', label: 'continuation', text: 'Resume from the terminal state.' }),
+      expect.objectContaining({ type: 'assistant', message: expect.objectContaining({ content: [expect.objectContaining({ type: 'text', text: 'continued answer' })] }) }),
+    ]));
+    expect(JSON.stringify(continued.result.thread_snapshot)).not.toContain('initial answer"},{"type":"assistant');
+  });
+
+  it('hardens nested session jsonl permissions after the file appears', async () => {
+    if (process.platform === 'win32') return;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagent-session-perms-'));
+    const sessionPath = path.join(cwd, 'nested', 'late-session.jsonl');
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async function (this: any) {
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true, mode: 0o755 });
+        fs.writeFileSync(sessionPath, '{"type":"session"}\n', { mode: 0o644 });
+        fs.chmodSync(sessionPath, 0o644);
+        this.messages = [{ role: 'assistant', content: [{ type: 'text', text: 'permission hardened' }] }];
+      }),
+      messages: [],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    try {
+      sessionManagerSpies.create.mockReturnValueOnce({ path: sessionPath });
+      const { result } = await runWithSession(session, cwd);
+      expect(result.nested_session_path).toBe(sessionPath);
+      expect(fs.statSync(sessionPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(sessionPath)).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
   it('emits and returns bounded snapshots for assistant text, paired bash output, tool errors, and custom fallback tools without changing result or usage', async () => {
     const largeOutput = 'x'.repeat(6000);
@@ -217,10 +307,10 @@ describe('subagent runner thread snapshots', () => {
     const { result } = await runWithSession(session);
     const labels = result.thread_snapshot?.items.map((item: any) => item.type === 'assistant'
       ? `assistant:${item.message.content.map((part: any) => part.type === 'toolCall' ? `toolCall:${part.name}` : part.text).join('|')}`
-      : `${item.type}:${item.name}`);
+      : item.type === 'attempt' ? `attempt:${item.attempt}` : `${item.type}:${item.name}`);
 
-    expect(labels).toEqual(['user:undefined', 'assistant:toolCall:read', 'tool:read', 'assistant:final after tools']);
-    expect(result.thread_snapshot?.items[0]).toMatchObject({ type: 'user', label: 'delegated_task' });
+    expect(labels).toEqual(['attempt:1', 'user:undefined', 'assistant:toolCall:read', 'tool:read', 'assistant:final after tools']);
+    expect(result.thread_snapshot?.items[1]).toMatchObject({ type: 'user', label: 'delegated_task' });
     expect(JSON.stringify(result.thread_snapshot)).toContain('# Agent Guide');
   });
 
@@ -248,10 +338,12 @@ describe('subagent runner thread snapshots', () => {
     const labels = result.thread_snapshot?.items.map((item: any) => {
       if (item.type === 'assistant') return `assistant:${item.message.content.map((part: any) => part.type === 'thinking' ? `thinking:${part.thinking}` : part.type === 'toolCall' ? `toolCall:${part.name}` : `text:${part.text}`).join('|')}`;
       if (item.type === 'tool') return `tool:${item.name}`;
+      if (item.type === 'attempt') return `attempt:${item.attempt}`;
       return `${item.type}:${item.label}`;
     });
 
     expect(labels).toEqual([
+      'attempt:1',
       'user:delegated_task',
       'assistant:thinking:first reasoning before reading',
       'assistant:toolCall:read',

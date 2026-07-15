@@ -1,9 +1,10 @@
 import { safeErrorMetadataDetails } from '../error-metadata.js';
+import { appendSubagentResumeGuidance } from './tools/formatting.js';
 import { wrapLineToWidth } from './text-width.js';
 
 export function completionMessage(task: any): string {
   const result = task.result ?? task.error ?? task.output_preview ?? '(no result captured)';
-  return [
+  const content = [
     `Subagent ${task.agent} ${task.status}: ${task.id}`,
     '',
     'Read only this final response from the subagent. Do not reread the full execution transcript unless the user explicitly asks for debugging details.',
@@ -12,6 +13,7 @@ export function completionMessage(task: any): string {
     '',
     result,
   ].join('\n');
+  return appendSubagentResumeGuidance(content, [task]);
 }
 
 function safeCompletionErrorMetadata(task: any): Record<string, unknown> | undefined {

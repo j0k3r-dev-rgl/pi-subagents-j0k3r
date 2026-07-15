@@ -53,6 +53,167 @@ function configureHistoryDb(db: Db): void {
   try { db.exec('PRAGMA synchronous = NORMAL'); } catch {}
 }
 
+function ensureAttemptColumns(db: Db): void {
+  ensureColumn(db, 'subagent_task_attempts', 'cwd', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'agent', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'mode', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'status', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'task', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'context', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'created_at', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'session_id', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'nested_session_path', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'started_at', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'ended_at', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'last_activity_at', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'last_activity', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'output_preview', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'prompt', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'continuation_prompt', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'system_prompt', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'transcript', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_input', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_output', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_cache_read', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_cache_write', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_cost', 'REAL');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_context_tokens', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'usage_turns', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'model', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'effort', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'model_source', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'effort_source', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'fallback_used', 'INTEGER');
+  ensureColumn(db, 'subagent_task_attempts', 'error', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'error_metadata_json', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'error_category', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'result', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'thread_snapshot_json', 'TEXT');
+}
+
+function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attempts', cwd: string, task: SubagentTask): void {
+  let errorMetadataJson: string | null = null;
+  let errorCategory: string | null = null;
+  if (task.error_metadata !== undefined) {
+    try {
+      errorMetadataJson = serializeErrorMetadata(task.error_metadata);
+      errorCategory = parseErrorMetadata(errorMetadataJson)?.category ?? null;
+    } catch {
+      errorMetadataJson = null;
+      errorCategory = null;
+    }
+  }
+
+  const columns = table === 'subagent_tasks'
+    ? 'id, cwd, agent, mode, status, task, context, created_at, attempt, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json'
+    : 'task_id, attempt, cwd, agent, mode, status, task, context, created_at, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json';
+  const placeholders = new Array(columns.split(',').length).fill('?').join(', ');
+  const update = table === 'subagent_tasks'
+    ? `status=excluded.status,
+        attempt=excluded.attempt,
+        session_id=excluded.session_id,
+        nested_session_path=excluded.nested_session_path,
+        started_at=excluded.started_at,
+        ended_at=excluded.ended_at,
+        last_activity_at=excluded.last_activity_at,
+        last_activity=excluded.last_activity,
+        output_preview=excluded.output_preview,
+        prompt=excluded.prompt,
+        continuation_prompt=excluded.continuation_prompt,
+        system_prompt=excluded.system_prompt,
+        transcript=excluded.transcript,
+        usage_input=excluded.usage_input,
+        usage_output=excluded.usage_output,
+        usage_cache_read=excluded.usage_cache_read,
+        usage_cache_write=excluded.usage_cache_write,
+        usage_cost=excluded.usage_cost,
+        usage_context_tokens=excluded.usage_context_tokens,
+        usage_turns=excluded.usage_turns,
+        model=excluded.model,
+        effort=excluded.effort,
+        model_source=excluded.model_source,
+        effort_source=excluded.effort_source,
+        fallback_used=excluded.fallback_used,
+        error=excluded.error,
+        error_metadata_json=excluded.error_metadata_json,
+        error_category=excluded.error_category,
+        result=excluded.result,
+        thread_snapshot_json=excluded.thread_snapshot_json`
+    : `status=excluded.status,
+        session_id=excluded.session_id,
+        nested_session_path=excluded.nested_session_path,
+        started_at=excluded.started_at,
+        ended_at=excluded.ended_at,
+        last_activity_at=excluded.last_activity_at,
+        last_activity=excluded.last_activity,
+        output_preview=excluded.output_preview,
+        prompt=excluded.prompt,
+        continuation_prompt=excluded.continuation_prompt,
+        system_prompt=excluded.system_prompt,
+        transcript=excluded.transcript,
+        usage_input=excluded.usage_input,
+        usage_output=excluded.usage_output,
+        usage_cache_read=excluded.usage_cache_read,
+        usage_cache_write=excluded.usage_cache_write,
+        usage_cost=excluded.usage_cost,
+        usage_context_tokens=excluded.usage_context_tokens,
+        usage_turns=excluded.usage_turns,
+        model=excluded.model,
+        effort=excluded.effort,
+        model_source=excluded.model_source,
+        effort_source=excluded.effort_source,
+        fallback_used=excluded.fallback_used,
+        error=excluded.error,
+        error_metadata_json=excluded.error_metadata_json,
+        error_category=excluded.error_category,
+        result=excluded.result,
+        thread_snapshot_json=excluded.thread_snapshot_json`;
+  const identity = table === 'subagent_tasks' ? 'id' : 'task_id, attempt';
+
+  db.prepare(`
+    INSERT INTO ${table} (${columns}) VALUES (${placeholders})
+    ON CONFLICT(${identity}) DO UPDATE SET ${update}
+  `).run(
+    ...(table === 'subagent_tasks' ? [task.id] : [task.id, task.attempt ?? 1]),
+    cwd,
+    task.agent,
+    task.mode,
+    task.status,
+    task.task,
+    value(task.context),
+    task.created_at,
+    ...(table === 'subagent_tasks' ? [task.attempt ?? 1] : []),
+    value(task.session_id),
+    value(task.nested_session_path),
+    value(task.started_at),
+    value(task.ended_at),
+    value(task.last_activity_at),
+    value(task.last_activity),
+    value(task.output_preview),
+    value(task.prompt),
+    value(task.continuation_prompt),
+    value(task.system_prompt),
+    value(task.transcript),
+    task.usage?.input ?? null,
+    task.usage?.output ?? null,
+    task.usage?.cacheRead ?? null,
+    task.usage?.cacheWrite ?? null,
+    task.usage?.cost ?? null,
+    task.usage?.contextTokens ?? null,
+    task.usage?.turns ?? null,
+    value(task.model),
+    value(task.effort),
+    value(task.model_source),
+    value(task.effort_source),
+    task.fallback_used === undefined ? null : task.fallback_used ? 1 : 0,
+    value(task.error),
+    errorMetadataJson,
+    errorCategory,
+    value(task.result),
+    snapshotJson(task.thread_snapshot),
+  );
+}
+
 export class SubagentHistoryStore {
   private dbs = new Map<string, Db>();
 
@@ -76,13 +237,16 @@ export class SubagentHistoryStore {
         task TEXT NOT NULL,
         context TEXT,
         created_at TEXT NOT NULL,
+        attempt INTEGER,
         session_id TEXT,
+        nested_session_path TEXT,
         started_at TEXT,
         ended_at TEXT,
         last_activity_at TEXT,
         last_activity TEXT,
         output_preview TEXT,
         prompt TEXT,
+        continuation_prompt TEXT,
         system_prompt TEXT,
         transcript TEXT,
         usage_input INTEGER,
@@ -103,9 +267,50 @@ export class SubagentHistoryStore {
         result TEXT,
         thread_snapshot_json TEXT
       );
+      CREATE TABLE IF NOT EXISTS subagent_task_attempts (
+        task_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        cwd TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task TEXT NOT NULL,
+        context TEXT,
+        created_at TEXT NOT NULL,
+        session_id TEXT,
+        nested_session_path TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        last_activity_at TEXT,
+        last_activity TEXT,
+        output_preview TEXT,
+        prompt TEXT,
+        continuation_prompt TEXT,
+        system_prompt TEXT,
+        transcript TEXT,
+        usage_input INTEGER,
+        usage_output INTEGER,
+        usage_cache_read INTEGER,
+        usage_cache_write INTEGER,
+        usage_cost REAL,
+        usage_context_tokens INTEGER,
+        usage_turns INTEGER,
+        model TEXT,
+        effort TEXT,
+        model_source TEXT,
+        effort_source TEXT,
+        fallback_used INTEGER,
+        error TEXT,
+        error_metadata_json TEXT,
+        error_category TEXT,
+        result TEXT,
+        thread_snapshot_json TEXT,
+        PRIMARY KEY (task_id, attempt)
+      );
       CREATE TABLE IF NOT EXISTS subagent_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id TEXT NOT NULL,
+        attempt INTEGER,
         cwd TEXT NOT NULL,
         created_at TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -115,105 +320,31 @@ export class SubagentHistoryStore {
       );
       CREATE INDEX IF NOT EXISTS idx_subagent_tasks_created ON subagent_tasks(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_subagent_events_task ON subagent_events(task_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_subagent_attempts_task ON subagent_task_attempts(task_id, attempt);
     `);
+    ensureColumn(db, 'subagent_tasks', 'attempt', 'INTEGER');
+    ensureColumn(db, 'subagent_tasks', 'nested_session_path', 'TEXT');
+    ensureColumn(db, 'subagent_tasks', 'continuation_prompt', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'system_prompt', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'error_metadata_json', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'error_category', 'TEXT');
+    ensureAttemptColumns(db);
+    ensureColumn(db, 'subagent_events', 'attempt', 'INTEGER');
     this.dbs.set(file, db);
     return db;
   }
 
   upsertTask(cwd: string, task: SubagentTask): void {
-    let errorMetadataJson: string | null = null;
-    let errorCategory: string | null = null;
-    if (task.error_metadata !== undefined) {
-      try {
-        errorMetadataJson = serializeErrorMetadata(task.error_metadata);
-        errorCategory = parseErrorMetadata(errorMetadataJson)?.category ?? null;
-      } catch {
-        errorMetadataJson = null;
-        errorCategory = null;
-      }
-    }
-
-    this.db(cwd).prepare(`
-      INSERT INTO subagent_tasks (
-        id, cwd, agent, mode, status, task, context, created_at, session_id, started_at, ended_at,
-        last_activity_at, last_activity, output_preview, prompt, system_prompt, transcript,
-        usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns,
-        model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        status=excluded.status,
-        session_id=excluded.session_id,
-        started_at=excluded.started_at,
-        ended_at=excluded.ended_at,
-        last_activity_at=excluded.last_activity_at,
-        last_activity=excluded.last_activity,
-        output_preview=excluded.output_preview,
-        prompt=excluded.prompt,
-        system_prompt=excluded.system_prompt,
-        transcript=excluded.transcript,
-        usage_input=excluded.usage_input,
-        usage_output=excluded.usage_output,
-        usage_cache_read=excluded.usage_cache_read,
-        usage_cache_write=excluded.usage_cache_write,
-        usage_cost=excluded.usage_cost,
-        usage_context_tokens=excluded.usage_context_tokens,
-        usage_turns=excluded.usage_turns,
-        model=excluded.model,
-        effort=excluded.effort,
-        model_source=excluded.model_source,
-        effort_source=excluded.effort_source,
-        fallback_used=excluded.fallback_used,
-        error=excluded.error,
-        error_metadata_json=excluded.error_metadata_json,
-        error_category=excluded.error_category,
-        result=excluded.result,
-        thread_snapshot_json=excluded.thread_snapshot_json
-    `).run(
-      task.id,
-      cwd,
-      task.agent,
-      task.mode,
-      task.status,
-      task.task,
-      value(task.context),
-      task.created_at,
-      value(task.session_id),
-      value(task.started_at),
-      value(task.ended_at),
-      value(task.last_activity_at),
-      value(task.last_activity),
-      value(task.output_preview),
-      value(task.prompt),
-      value(task.system_prompt),
-      value(task.transcript),
-      task.usage?.input ?? null,
-      task.usage?.output ?? null,
-      task.usage?.cacheRead ?? null,
-      task.usage?.cacheWrite ?? null,
-      task.usage?.cost ?? null,
-      task.usage?.contextTokens ?? null,
-      task.usage?.turns ?? null,
-      value(task.model),
-      value(task.effort),
-      value(task.model_source),
-      value(task.effort_source),
-      task.fallback_used === undefined ? null : task.fallback_used ? 1 : 0,
-      value(task.error),
-      errorMetadataJson,
-      errorCategory,
-      value(task.result),
-      snapshotJson(task.thread_snapshot),
-    );
+    const db = this.db(cwd);
+    upsertTaskRecord(db, 'subagent_tasks', cwd, task);
+    upsertTaskRecord(db, 'subagent_task_attempts', cwd, { ...task, attempt: task.attempt ?? 1 });
   }
 
   addEvent(cwd: string, task: SubagentTask, activity: string): void {
     this.db(cwd).prepare(`
-      INSERT INTO subagent_events (task_id, cwd, created_at, status, activity, output_preview)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(task.id, cwd, task.last_activity_at ?? new Date().toISOString(), task.status, activity, value(task.output_preview));
+      INSERT INTO subagent_events (task_id, attempt, cwd, created_at, status, activity, output_preview)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(task.id, task.attempt ?? 1, cwd, task.last_activity_at ?? new Date().toISOString(), task.status, activity, value(task.output_preview));
   }
 
   getTask(cwd: string, id: string, options: HistoryReadOptions = {}): SubagentTask | undefined {
@@ -234,6 +365,52 @@ export class SubagentHistoryStore {
       SELECT * FROM subagent_tasks WHERE cwd = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?
     `).all(cwd, sessionId, limit).map((row) => rowToTask(row, options));
   }
+
+  listTaskAttempts(cwd: string, taskId: string, options: HistoryReadOptions = {}): SubagentTask[] {
+    return this.db(cwd).prepare(`
+      SELECT
+        task_id AS id,
+        cwd,
+        agent,
+        mode,
+        status,
+        task,
+        context,
+        created_at,
+        attempt,
+        session_id,
+        nested_session_path,
+        started_at,
+        ended_at,
+        last_activity_at,
+        last_activity,
+        output_preview,
+        prompt,
+        continuation_prompt,
+        system_prompt,
+        transcript,
+        usage_input,
+        usage_output,
+        usage_cache_read,
+        usage_cache_write,
+        usage_cost,
+        usage_context_tokens,
+        usage_turns,
+        model,
+        effort,
+        model_source,
+        effort_source,
+        fallback_used,
+        error,
+        error_metadata_json,
+        error_category,
+        result,
+        thread_snapshot_json
+      FROM subagent_task_attempts
+      WHERE cwd = ? AND task_id = ?
+      ORDER BY attempt ASC
+    `).all(cwd, taskId).map((row) => rowToTask(row, options));
+  }
 }
 
 function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
@@ -245,13 +422,16 @@ function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
     task: row.task,
     context: row.context ?? undefined,
     created_at: row.created_at,
+    attempt: row.attempt ?? 1,
     session_id: row.session_id ?? undefined,
+    nested_session_path: row.nested_session_path ?? undefined,
     started_at: row.started_at ?? undefined,
     ended_at: row.ended_at ?? undefined,
     last_activity_at: row.last_activity_at ?? undefined,
     last_activity: row.last_activity ?? undefined,
     output_preview: row.output_preview ?? undefined,
     prompt: row.prompt ?? undefined,
+    continuation_prompt: row.continuation_prompt ?? undefined,
     system_prompt: row.system_prompt ?? undefined,
     transcript: row.transcript ?? undefined,
     usage: row.usage_input === null && row.usage_output === null && row.usage_cache_read === null && row.usage_cache_write === null && row.usage_cost === null && row.usage_context_tokens === null && row.usage_turns === null ? undefined : {

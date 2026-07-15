@@ -289,7 +289,7 @@ export class SubagentsHistoryPanel {
     const timeoutHint = timeout ? ` ${dim(`(timeout ${timeout})`)}` : '';
     const stallHint = stallTimeout ? ` ${dim(`(stall ${stallTimeout})`)}` : '';
     const lastActivity = [task.last_activity ?? 'n/a', task.last_activity_at ? dim(task.last_activity_at) : ''].filter(Boolean).join(' ');
-    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}  ${dim('agent:')} ${accent(task.agent)}  ${dim('status:')} ${status(task)}  ${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
+    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}  ${dim('agent:')} ${accent(task.agent)}  ${dim('status:')} ${status(task)}  ${dim('attempt:')} ${accent(String(task.attempt ?? 1))}  ${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
     lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}  ${dim('id:')} ${task.id}  ${dim('duration:')} ${fmtDuration(task)}${timeoutHint}`));
     if (usage) lines.push(line(`${dim('usage:')} ${usage}`));
     lines.push(line(`${dim('last:')} ${lastActivity}${stallHint}`));
@@ -343,7 +343,7 @@ export class SubagentsHistoryPanel {
     const selected = (s: string) => this.theme?.fg?.('warning', s) ?? s;
     const chip = (index: number): { raw: string; styled: string } => {
       const task = tasks[index]!;
-      const raw = `${index === this.selected ? '●' : '○'} ${task.agent}:${task.status}${task.effort ? ` effort:${task.effort}` : ''}`;
+      const raw = `${index === this.selected ? '●' : '○'} ${task.agent}:${task.status}${task.attempt ? ` attempt:${task.attempt}` : ''}${task.effort ? ` effort:${task.effort}` : ''}`;
       return { raw, styled: index === this.selected ? selected(raw) : dim(raw) };
     };
     const selectedChip = chip(this.selected);
@@ -465,13 +465,14 @@ export class SubagentsHistoryPanel {
   private executionFlowFor(task: SubagentTask): string {
     const usage = formatUsage(task.usage);
     const parts = [
-      `agent: ${task.agent} · status: ${task.status} · effort: ${task.effort ?? 'default/current'}`,
+      `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · effort: ${task.effort ?? 'default/current'}`,
       `model: ${task.model ?? 'default/current'}${usage ? ` · usage: ${usage}` : ''}`,
       '',
       `Preparing for response`,
       '',
       task.prompt ? ['# delegated task', this.extractPromptTail(task.prompt)].join('\n') : ['# delegated task', task.task].join('\n'),
       task.context ? ['', '# context', task.context].join('\n') : undefined,
+      task.continuation_prompt ? ['', '# continuation prompt', task.continuation_prompt].join('\n') : undefined,
       usage ? ['', '# usage', usage].join('\n') : undefined,
       task.transcript ? ['', '# execution', this.cleanTranscript(task.transcript)].join('\n') : undefined,
       task.error ? ['', '# error', task.error].join('\n') : undefined,

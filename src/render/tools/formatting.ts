@@ -1,5 +1,18 @@
 import type { SubagentTask } from '../types.js';
 
+export const SUBAGENT_RESUME_GUIDANCE = [
+  '## optional resume',
+  'This task can be resumed with `subagent_continue` by sending a continuation prompt with the same `task_id`.',
+  'Ask the user before resuming. The user may keep the currently configured model and effort or explicitly choose a different model, effort, or both for the next attempt.',
+  "Do not resume or override the model or effort without the user's explicit decision. Never switch models automatically.",
+].join('\n');
+
+export function appendSubagentResumeGuidance(text: string, tasks: Array<Pick<SubagentTask, 'status'>>): string {
+  return tasks.some((task) => task.status === 'failed' || task.status === 'cancelled')
+    ? `${text}\n\n${SUBAGENT_RESUME_GUIDANCE}`
+    : text;
+}
+
 export function clip(text: string | undefined, limit = 240): string {
   if (!text) return '';
   const normalized = text.replace(/\s+/g, ' ').trim();
@@ -35,7 +48,7 @@ export function formatTask(task: SubagentTask): string {
   const when = task.last_activity_at ?? task.started_at ?? task.created_at;
   const usage = formatUsage(task);
   const lines = [
-    `agent: ${task.agent} · status: ${task.status} · id: ${task.id}`,
+    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
@@ -49,7 +62,7 @@ function formatTaskListItem(task: SubagentTask): string {
   const when = task.last_activity_at ?? task.started_at ?? task.created_at;
   const usage = formatUsage(task);
   const lines = [
-    `agent: ${task.agent} · status: ${task.status} · id: ${task.id}`,
+    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
@@ -61,7 +74,7 @@ function formatTaskListItem(task: SubagentTask): string {
 function formatTaskListRow(task: SubagentTask): string {
   const usage = formatUsage(task);
   return [
-    `agent: ${task.agent} · status: ${task.status} · id: ${task.id}`,
+    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
     usage ? `usage: ${usage}` : undefined,
   ].filter(Boolean).join(' · ');
 }
@@ -102,7 +115,7 @@ export function taskFinalText(task: SubagentTask | undefined, result?: any): str
 }
 
 export function formatTaskModeContent(tasks: SubagentTask[]): string {
-  return [
+  const content = [
     `Completed ${tasks.length} subagent task(s):`,
     ...tasks.map((task) => {
       const finalText = taskFinalText(task);
@@ -112,6 +125,7 @@ export function formatTaskModeContent(tasks: SubagentTask[]): string {
       ].filter(Boolean).join('\n');
     }),
   ].join('\n\n');
+  return appendSubagentResumeGuidance(content, tasks);
 }
 
 export function backgroundLaunchContent(taskIds: string[], verb = 'Sent'): string {

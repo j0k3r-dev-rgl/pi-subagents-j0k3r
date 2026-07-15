@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { resolveEffectiveSubagentProfile } from '../profile-resolver.js';
 import { SubagentStructuredError } from '../error-metadata.js';
+import { resolveSubagentsHistoryHome } from '../history.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
 import { getInteractionSessionRegistry } from './interaction-session-registry.js';
 import { loadPiSdkModule } from './pi-sdk-module.js';
@@ -66,15 +69,67 @@ function registerInteractionSubagentSession(session: any, definition: SubagentDe
   };
 }
 
-async function createSession(model: any, cwd: string, tools: string[], effort: ThinkingEffort | undefined, config: SubagentsConfig, ctx: any, systemPrompt: string) {
+function resolveNestedSessionsHome(): string {
+  const home = path.join(resolveSubagentsHistoryHome(), 'sessions');
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(home, 0o700); } catch {}
+  return home;
+}
+
+function sessionPathFromManager(sessionManager: any, fallback?: string): string | undefined {
+  const direct = sessionManager?.getSessionFile?.() ?? sessionManager?.path ?? sessionManager?.sessionPath ?? fallback;
+  return typeof direct === 'string' && direct.length > 0 ? direct : undefined;
+}
+
+function secureSessionPath(sessionPath: string | undefined): void {
+  if (!sessionPath) return;
+  try {
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true, mode: 0o700 });
+    fs.chmodSync(path.dirname(sessionPath), 0o700);
+  } catch {}
+  try { fs.chmodSync(sessionPath, 0o600); } catch {}
+}
+
+async function secureSessionPathWhenReady(sessionPath: string | undefined, attempts = 10, delayMs = 10): Promise<void> {
+  if (!sessionPath) return;
+  secureSessionPath(sessionPath);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      if (fs.existsSync(sessionPath)) {
+        fs.chmodSync(sessionPath, 0o600);
+        return;
+      }
+    } catch {}
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+async function createSession(
+  model: any,
+  cwd: string,
+  tools: string[],
+  effort: ThinkingEffort | undefined,
+  config: SubagentsConfig,
+  ctx: any,
+  systemPrompt: string,
+  nestedSessionPath?: string,
+) {
   const piSdk = await loadPiSdkModule();
   const { createAgentSession, SessionManager } = piSdk;
+  const sessionDir = resolveNestedSessionsHome();
+  const sessionManager = nestedSessionPath
+    ? await SessionManager.open(nestedSessionPath, sessionDir, cwd)
+    : typeof SessionManager.create === 'function'
+      ? await SessionManager.create(cwd, sessionDir, { cwd })
+      : SessionManager.inMemory(cwd);
+  const resolvedSessionPath = sessionPathFromManager(sessionManager, nestedSessionPath);
+  await secureSessionPathWhenReady(resolvedSessionPath);
   const options: Record<string, unknown> = {
     cwd,
     model,
     thinkingLevel: effort,
     tools,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager,
   };
   if (ctx?.authStorage) options.authStorage = ctx.authStorage;
   if (ctx?.modelRegistry) options.modelRegistry = ctx.modelRegistry;
@@ -98,7 +153,8 @@ async function createSession(model: any, cwd: string, tools: string[], effort: T
     options.agentDir = agentDir;
     options.resourceLoader = resourceLoader;
   }
-  return createAgentSession(options);
+  const created = await createAgentSession(options);
+  return { ...created, nested_session_path: resolvedSessionPath };
 }
 
 function selectedModel(input: { ctx: any; definition: SubagentDefinition; profile: EffectiveSubagentProfile }): any | undefined {
@@ -114,24 +170,47 @@ function providerFromModel(model: any): string | undefined {
   return typeof model?.provider === 'string' ? model.provider : undefined;
 }
 
-export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, onActivity }) => {
+export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, onActivity }) => {
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
   const effort = profile.effort.value;
   const tools = definition.tools?.length ? definition.tools : config.default_tools;
   const systemPrompt = definition.instructions;
-  const prompt = buildPrompt(definition, task, context, tools);
-  onActivity?.({ message: 'orchestrator prompt prepared', prompt, system_prompt: systemPrompt, transcript: `# system prompt\n\n${systemPrompt}\n\n# delegated prompt\n\n${prompt}\n`, effort });
+  const prompt = continuation?.prompt ?? buildPrompt(definition, task, context, tools);
+  onActivity?.({
+    message: continuation ? 'continuation prompt prepared' : 'orchestrator prompt prepared',
+    prompt,
+    system_prompt: systemPrompt,
+    transcript: `# system prompt\n\n${systemPrompt}\n\n# ${continuation ? 'continuation prompt' : 'delegated prompt'}\n\n${prompt}\n`,
+    effort,
+  });
 
   async function attempt(model: any) {
     onActivity?.({ message: `starting ${definition.name} with model ${modelLabel(model) ?? 'unknown'}${effort ? ` effort ${effort}` : ''}`, prompt, system_prompt: systemPrompt, effort });
-    const { session } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt);
+    const { session, nested_session_path: resolvedNestedSessionPath } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
+    onActivity?.({ message: 'nested session ready', nested_session_path: resolvedNestedSessionPath });
     const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
     try {
       const effectiveSystemPrompt = typeof session.systemPrompt === 'string' ? session.systemPrompt : systemPrompt;
-      const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(session, prompt, config.stall_timeout_ms, signal, onActivity, context, cwd, effectiveSystemPrompt, taskId);
-      return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt };
+      const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(
+        session,
+        prompt,
+        config.stall_timeout_ms,
+        signal,
+        onActivity,
+        context,
+        cwd,
+        effectiveSystemPrompt,
+        taskId,
+        continuation?.previous_snapshot,
+        continuation ? 'continuation' : 'delegated_task',
+        continuation?.prompt ?? task,
+        continuation?.attempt ?? 1,
+      );
+      await secureSessionPathWhenReady(resolvedNestedSessionPath);
+      return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt, nested_session_path: resolvedNestedSessionPath };
     } catch (error) {
+      await secureSessionPathWhenReady(resolvedNestedSessionPath);
       throw error instanceof SubagentStructuredError
         ? error
         : new SubagentStructuredError(structuredMetadataFromError(error, {
@@ -146,8 +225,18 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
   }
 
   try {
-    const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(preferred);
-    return { result, usage, thread_snapshot, interaction_request, system_prompt, model: modelLabel(preferred) ?? modelRefLabel(profile.model.value), effort, fallback_used: false };
+    const { result, usage, thread_snapshot, interaction_request, system_prompt, nested_session_path: resolvedNestedSessionPath } = await attempt(preferred);
+    return {
+      result,
+      usage,
+      thread_snapshot,
+      interaction_request,
+      system_prompt,
+      nested_session_path: resolvedNestedSessionPath,
+      model: modelLabel(preferred) ?? modelRefLabel(profile.model.value),
+      effort,
+      fallback_used: false,
+    };
   } catch (error) {
     if (signal.aborted) throw new Error('Subagent was aborted');
     const preferredLabel = modelLabel(preferred) ?? modelRefLabel(profile.model.value) ?? 'unknown';

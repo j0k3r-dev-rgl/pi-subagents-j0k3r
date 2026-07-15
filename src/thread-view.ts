@@ -5,6 +5,7 @@ import { writeSubagentsDebugLog } from './debug.js';
 
 import type {
   SubagentAssistantItem,
+  SubagentAttemptItem,
   SubagentBashItem,
   SubagentCustomItem,
   SubagentErrorItem,
@@ -75,8 +76,9 @@ function isThreadItem(value: unknown): value is SubagentThreadItem {
   if (!isRecord(value) || typeof value.type !== 'string') return false;
   if (!isOptionalString(value.id)) return false;
   switch (value.type) {
+    case 'attempt': return Number.isInteger(value.attempt) && Number(value.attempt) > 0;
     case 'assistant': return isAssistantItem(value);
-    case 'user': return typeof value.text === 'string' && (value.label === undefined || ['delegated_task', 'context', 'prompt', 'user'].includes(String(value.label)));
+    case 'user': return typeof value.text === 'string' && (value.label === undefined || ['delegated_task', 'continuation', 'context', 'prompt', 'user'].includes(String(value.label)));
     case 'tool': return isToolItem(value);
     case 'tool_result': return isToolResultItem(value);
     case 'bash': return isBashItem(value);
@@ -121,6 +123,7 @@ function boundPayload(payload: SubagentToolResultPayload, limit: number): Subage
 
 function boundItem(item: SubagentThreadItem, limit: number): SubagentThreadItem {
   switch (item.type) {
+    case 'attempt': return item;
     case 'assistant':
       return {
         ...item,
@@ -147,7 +150,14 @@ export function boundThreadSnapshot(value: unknown, options: BoundOptions = {}):
   if (!isValidThreadSnapshot(value)) return undefined;
   const limit = Math.max(1, options.textLimit ?? DEFAULT_TEXT_LIMIT);
   const maxItems = Math.max(0, options.maxItems ?? DEFAULT_MAX_ITEMS);
-  return { ...value, items: value.items.slice(0, maxItems).map((item) => boundItem(item, limit)) };
+  const items = value.items.length <= maxItems
+    ? value.items
+    : maxItems === 0
+      ? []
+      : maxItems === 1
+        ? value.items.slice(0, 1)
+        : [value.items[0]!, ...value.items.slice(-(maxItems - 1))];
+  return { ...value, items: items.map((item) => boundItem(item, limit)) };
 }
 
 function payloadText(payload: SubagentToolResultPayload): string {
@@ -289,16 +299,32 @@ function renderAssistantItem(item: SubagentAssistantItem, context: SubagentThrea
   return assistantText(displayItem);
 }
 
+function userItemTitle(item: SubagentUserItem): string | undefined {
+  if (item.label === 'context') return 'orchestrator context';
+  if (item.label === 'delegated_task') return 'delegated task';
+  if (item.label === 'continuation') return 'continuation prompt';
+  return undefined;
+}
+
 function renderUserItem(item: SubagentUserItem, context: SubagentThreadRenderContext, width: number): string[] {
+  const title = userItemTitle(item);
+  const displayText = title ? `## ${title}\n\n${item.text}` : item.text;
   const componentCtor = loadPiComponents()?.UserMessageComponent;
   if (typeof componentCtor === 'function') {
     try {
       const markdownTheme = loadPiComponents()?.getMarkdownTheme?.() ?? context.theme;
-      const rendered = renderComponent(new componentCtor(item.text, markdownTheme), width);
+      const rendered = renderComponent(new componentCtor(displayText, markdownTheme), width);
       if (rendered?.some((line) => line.trim())) return rendered;
     } catch (error) { debugLog(context, 'user_component_error', { error, label: item.label }); }
   }
-  return [`${item.label ?? 'user'}: ${item.text}`];
+  return title ? [title, item.text] : [`${item.label ?? 'user'}: ${item.text}`];
+}
+
+function renderAttemptItem(item: SubagentAttemptItem, context: SubagentThreadRenderContext, width: number): string[] {
+  const label = `attempt ${item.attempt}`;
+  const dividerWidth = Math.max(0, Math.min(12, Math.floor((width - label.length - 2) / 2)));
+  const text = `${'─'.repeat(dividerWidth)} ${label} ${'─'.repeat(dividerWidth)}`.trim();
+  return [context.theme?.fg?.('accent', context.theme?.bold?.(text) ?? text) ?? text];
 }
 
 const builtInToolDefinitionCache = new Map<string, unknown>();
@@ -473,6 +499,7 @@ function renderCustomItem(item: SubagentCustomItem, context: SubagentThreadRende
 
 function renderItem(item: SubagentThreadItem, context: SubagentThreadRenderContext, width: number): string[] {
   switch (item.type) {
+    case 'attempt': return renderAttemptItem(item, context, width);
     case 'assistant': return renderAssistantItem(item, context, width);
     case 'user': return renderUserItem(item, context, width);
     case 'tool': return renderToolItem(item, context, width);
@@ -496,11 +523,71 @@ function malformedItemText(item: unknown): string {
   return 'malformed thread item';
 }
 
+function closesLegacyAttempt(item: SubagentThreadItem): boolean {
+  if (item.type === 'error') return true;
+  if (item.type !== 'assistant') return false;
+  const hasText = item.message.content.some((part) => part.type === 'text' && part.text.trim());
+  const hasToolCall = item.message.content.some((part) => part.type === 'toolCall');
+  return hasText && !hasToolCall;
+}
+
+function delegatedTaskText(text: string): string {
+  const marker = '## delegated task';
+  const index = text.lastIndexOf(marker);
+  return index >= 0 ? text.slice(index + marker.length).trim() : text;
+}
+
+function normalizeLegacyAttemptPrefix(items: SubagentThreadItem[]): SubagentThreadItem[] {
+  const users = items.filter((item): item is SubagentUserItem => item.type === 'user');
+  const delegated = users.find((item) => item.label === 'delegated_task');
+  const context = users.find((item) => item.label === 'context');
+  const continuations = users.filter((item) => item.label === 'continuation');
+  const supportedUsers = users.every((item) => item.label === 'delegated_task' || item.label === 'context' || item.label === 'continuation');
+  if (!delegated || !supportedUsers) return items;
+
+  const outputItems = items.filter((item) => item.type !== 'user');
+  const chunks: SubagentThreadItem[][] = [];
+  let current: SubagentThreadItem[] = [];
+  for (const item of outputItems) {
+    current.push(item);
+    if (closesLegacyAttempt(item)) {
+      chunks.push(current);
+      current = [];
+    }
+  }
+  if (current.length) chunks.push(current);
+
+  const attemptCount = continuations.length + 1;
+  while (chunks.length < attemptCount) chunks.push([]);
+  if (chunks.length > attemptCount) return items;
+
+  const normalized: SubagentThreadItem[] = [];
+  for (let index = 0; index < attemptCount; index++) {
+    const attempt = index + 1;
+    normalized.push({ type: 'attempt', id: `attempt-${attempt}`, attempt });
+    if (index === 0) {
+      if (context) normalized.push(context);
+      normalized.push({ ...delegated, text: delegatedTaskText(delegated.text) });
+    } else {
+      normalized.push(continuations[index - 1]!);
+    }
+    normalized.push(...chunks[index]!);
+  }
+  return normalized;
+}
+
+function normalizeAttemptItems(items: SubagentThreadItem[]): SubagentThreadItem[] {
+  const firstAttempt = items.findIndex((item) => item.type === 'attempt');
+  if (firstAttempt === 0) return items;
+  if (firstAttempt < 0) return normalizeLegacyAttemptPrefix(items);
+  return [...normalizeLegacyAttemptPrefix(items.slice(0, firstAttempt)), ...items.slice(firstAttempt)];
+}
+
 export function renderThreadBody(snapshot: unknown, context: SubagentThreadRenderContext): string[] {
   if (!isRenderableSnapshotRoot(snapshot)) return [];
   const width = Math.max(1, Math.floor(context.renderWidth ?? DEFAULT_RENDER_WIDTH));
   const lines: string[] = [];
-  for (const rawItem of snapshot.items.slice(0, DEFAULT_MAX_ITEMS)) {
+  for (const rawItem of normalizeAttemptItems(snapshot.items as SubagentThreadItem[]).slice(0, DEFAULT_MAX_ITEMS)) {
     try {
       if (!isThreadItem(rawItem)) {
         lines.push(safeTruncate(context, malformedItemText(rawItem), width));

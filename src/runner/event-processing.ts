@@ -123,19 +123,24 @@ export async function promptWithInactivity(
   prompt: string,
   stallTimeoutMs: number,
   signal: AbortSignal,
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }) => void,
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string }) => void,
   delegatedContext?: string,
   cwd?: string,
   systemPrompt?: string,
   taskId?: string,
+  previousSnapshot?: SubagentThreadSnapshot,
+  promptLabel: 'delegated_task' | 'continuation' = 'delegated_task',
+  displayPrompt = prompt,
+  attempt = 1,
 ): Promise<{ result: string; usage: UsageStats; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }> {
   let output = '';
-  const snapshotBuilder = new ThreadSnapshotBuilder(prompt, delegatedContext, cwd);
+  const snapshotBuilder = new ThreadSnapshotBuilder(displayPrompt, delegatedContext, cwd, previousSnapshot, promptLabel, attempt);
   let latestInteractionRequest: SubagentInteractionRequest | undefined;
   let usage = emptyUsage();
-  let transcript = `${systemPrompt ? `# system prompt\n\n${systemPrompt}\n\n` : ''}# delegated prompt\n\n${prompt}\n\n# subagent execution\n`;
+  let transcript = `${systemPrompt ? `# system prompt\n\n${systemPrompt}\n\n` : ''}# ${promptLabel === 'continuation' ? 'continuation prompt' : 'delegated prompt'}\n\n${prompt}\n\n# subagent execution\n`;
   let lastActivity = Date.now();
   let stalled = false;
+  const initialMessagesLength = promptLabel === 'continuation' && Array.isArray(session.messages) ? session.messages.length : 0;
   let sawToolActivity = false;
   const activeToolCallIds = new Set<string>();
   onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot() });
@@ -225,7 +230,8 @@ export async function promptWithInactivity(
     } catch (error) {
       promptError = error;
     }
-    const thread_snapshot = snapshotBuilder.finalize(session.messages ?? []);
+    const currentMessages = (session.messages ?? []).slice(initialMessagesLength);
+    const thread_snapshot = snapshotBuilder.finalize(currentMessages);
     debugLog(cwd, 'runner_final_snapshot', { source: thread_snapshot?.source, items: thread_snapshot?.items.map((item) => ({ type: item.type, label: (item as any).label, name: (item as any).name, status: (item as any).status, assistantContent: item.type === 'assistant' ? item.message.content.map((part: any) => part.type) : undefined })) });
     if (stalled) {
       const metadata = normalizeErrorMetadata({
@@ -240,7 +246,7 @@ export async function promptWithInactivity(
       throw new SubagentStructuredError(metadata);
     }
     if (promptError) throw promptError;
-    const assistantFailure = lastAssistantFailure(session.messages ?? []);
+    const assistantFailure = lastAssistantFailure(currentMessages);
     if (assistantFailure) {
       const metadata = classifyAssistantFailure({
         ...assistantFailure,
@@ -252,7 +258,7 @@ export async function promptWithInactivity(
         throw new SubagentStructuredError(metadata);
       }
     }
-    const messageText = collectAssistantText(session.messages ?? []);
+    const messageText = collectAssistantText(currentMessages);
     const streamedFallback = sawToolActivity ? '' : output.trim();
     const collected = sanitizeInteractionTransportText(messageText || streamedFallback);
     if (!collected.trim()) {

@@ -1,10 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
-import extension, { sendSubagentCompletionMessage } from '../../index.js';
+import extension, { completionMessage, sendSubagentCompletionMessage } from '../../index.js';
 import { installSubagentTestEnv } from '../helpers/subagent-test-helpers.js';
 
 const env = installSubagentTestEnv();
 
 describe('completion message render', () => {
+  it('adds English resume instructions only to failed and cancelled completion messages', () => {
+    for (const status of ['failed', 'cancelled']) {
+      const message = completionMessage({ id: `subtask_${status}`, agent: 'analyst', status, error: `${status} result` });
+      expect(message).toContain('can be resumed with `subagent_continue`');
+      expect(message).toContain('Ask the user before resuming');
+      expect(message).toContain('model and effort');
+      expect(message).toContain('Never switch models automatically');
+    }
+
+    const completed = completionMessage({ id: 'subtask_completed', agent: 'analyst', status: 'completed', result: 'done' });
+    expect(completed).not.toContain('subagent_continue');
+    expect(completed).not.toContain('Ask the user before resuming');
+  });
+
   it('registers a compact/expanded renderer for background subagent completion messages', () => {
     let renderer: any;
     extension({

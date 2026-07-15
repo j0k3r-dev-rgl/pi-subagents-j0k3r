@@ -34,7 +34,7 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
   const usage = task ? formatUsage(task as SubagentTask) : '';
   const summary = task
     ? [
-      `agent: ${theme.fg?.('accent', task.agent) ?? task.agent} · status: ${status} · effort: ${theme.fg?.('accent', task.effort ?? 'default/current') ?? (task.effort ?? 'default/current')}`,
+      `agent: ${theme.fg?.('accent', task.agent) ?? task.agent} · status: ${status} · attempt: ${theme.fg?.('accent', String(task.attempt ?? 1)) ?? String(task.attempt ?? 1)} · effort: ${theme.fg?.('accent', task.effort ?? 'default/current') ?? (task.effort ?? 'default/current')}`,
       `${theme.fg?.('dim', `model: ${task.model ?? 'default/current'} · id: ${task.id}`) ?? `model: ${task.model ?? 'default/current'} · id: ${task.id}`}${usage ? `\n${theme.fg?.('dim', `usage: ${usage}`) ?? `usage: ${usage}`}` : ''}`,
     ].join('\n')
     : status;

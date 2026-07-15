@@ -234,6 +234,56 @@ describe('manager and history integration', () => {
     });
   });
 
+  it('waits for timed-out runner cleanup before continuing the same task id', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'timeout-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
+    let allowCleanup = false;
+    let cleanupFinished = false;
+    let reopenedBeforeCleanup = false;
+    const runner = vi.fn<SubagentRunner>(async ({ continuation, signal, onActivity }) => {
+      if (continuation) {
+        reopenedBeforeCleanup = !cleanupFinished;
+        return {
+          result: 'continued after timeout cleanup',
+          model: 'mock/model',
+          fallback_used: false,
+          nested_session_path: nestedSessionPath,
+        } as any;
+      }
+      onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      return await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const waitForCleanup = () => {
+            if (!allowCleanup) return setTimeout(waitForCleanup, 5);
+            cleanupFinished = true;
+            reject(new Error('Subagent was aborted'));
+          };
+          waitForCleanup();
+        }, { once: true });
+      });
+    });
+    const manager = new SubagentManager(runner);
+
+    const initial = await manager.run({ agent: 'analyst', task: 'timeout continuation', mode: 'task' }, { cwd: tmp });
+    const taskId = initial.task_ids[0]!;
+    const continuePromise = manager.continueTask({ task_id: taskId, prompt: 'Resume after timeout.' }, { cwd: tmp });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runner).toHaveBeenCalledTimes(1);
+    allowCleanup = true;
+
+    const continued = await continuePromise;
+    expect(reopenedBeforeCleanup).toBe(false);
+    expect(continued.results?.[0]).toMatchObject({
+      id: taskId,
+      status: 'completed',
+      attempt: 2,
+      result: 'continued after timeout cleanup',
+    });
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps exact-string compatibility for plain and malformed legacy manager failures while attaching metadata', async () => {
     writeAgent('analyst');
     const plainManager = new SubagentManager(async () => { throw new Error('legacy plain failure'); });
@@ -331,6 +381,52 @@ describe('manager and history integration', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(persisted.filter((entry) => entry.status === 'cancelled')).toHaveLength(1);
     expect(persisted.filter((entry) => entry.status === 'failed')).toHaveLength(0);
+  });
+
+  it('waits for cancelled runner cleanup before continuing the same nested session', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'cancel-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    let allowCleanup = false;
+    let cleanupFinished = false;
+    let reopenedBeforeCleanup = false;
+    const runner = vi.fn<SubagentRunner>(async ({ continuation, signal, onActivity }) => {
+      if (continuation) {
+        reopenedBeforeCleanup = !cleanupFinished;
+        return {
+          result: 'continued after cancel cleanup',
+          model: 'mock/model',
+          fallback_used: false,
+          nested_session_path: nestedSessionPath,
+        } as any;
+      }
+      onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      return await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const waitForCleanup = () => {
+            if (!allowCleanup) return setTimeout(waitForCleanup, 5);
+            cleanupFinished = true;
+            reject(new Error('Subagent was aborted'));
+          };
+          waitForCleanup();
+        }, { once: true });
+      });
+    });
+    const manager = new SubagentManager(runner);
+
+    const initial = await manager.run({ agent: 'analyst', task: 'cancel continuation', mode: 'background' }, { cwd: tmp });
+    const taskId = initial.task_ids[0]!;
+    manager.cancel(taskId, 'user request');
+    const continuePromise = manager.continueTask({ task_id: taskId, prompt: 'Resume after cancellation.' }, { cwd: tmp });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runner).toHaveBeenCalledTimes(1);
+    allowCleanup = true;
+
+    await continuePromise;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(reopenedBeforeCleanup).toBe(false);
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(manager.getTask(taskId)?.attempt).toBe(2);
   });
 
   it('records manager cancel metadata for parent abort with compatible wording', async () => {
@@ -563,6 +659,102 @@ describe('manager and history integration', () => {
     const currentRow = db.prepare('SELECT error_metadata_json, error_category FROM subagent_tasks WHERE id = ?').all('subtask_no_error_metadata')[0] as any;
     expect(currentRow.error_metadata_json).toBeNull();
     expect(currentRow.error_category).toBeNull();
+  });
+
+  it('migrates legacy subagent_task_attempts tables additively and preserves existing rows across reopen', () => {
+    const { DatabaseSync } = require('node:sqlite') as any;
+    fs.mkdirSync(path.dirname(resolveSubagentHistoryDbPath()), { recursive: true });
+    const db = new DatabaseSync(resolveSubagentHistoryDbPath());
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS subagent_tasks (
+        id TEXT PRIMARY KEY,
+        cwd TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task TEXT NOT NULL,
+        context TEXT,
+        created_at TEXT NOT NULL,
+        session_id TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        last_activity_at TEXT,
+        last_activity TEXT,
+        output_preview TEXT,
+        prompt TEXT,
+        system_prompt TEXT,
+        transcript TEXT,
+        usage_input INTEGER,
+        usage_output INTEGER,
+        usage_cache_read INTEGER,
+        usage_cache_write INTEGER,
+        usage_cost REAL,
+        usage_context_tokens INTEGER,
+        usage_turns INTEGER,
+        model TEXT,
+        effort TEXT,
+        model_source TEXT,
+        effort_source TEXT,
+        fallback_used INTEGER,
+        error TEXT,
+        result TEXT,
+        thread_snapshot_json TEXT,
+        continued_from TEXT,
+        root_task_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS subagent_task_attempts (
+        task_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        cwd TEXT,
+        status TEXT,
+        result TEXT,
+        PRIMARY KEY (task_id, attempt)
+      );
+    `);
+    const createdAt = new Date().toISOString();
+    db.prepare('INSERT INTO subagent_tasks (id, cwd, agent, mode, status, task, created_at, result, continued_from, root_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'legacy-attempt-task', tmp, 'analyst', 'task', 'completed', 'legacy work', createdAt, 'legacy projection', null, 'legacy-attempt-task',
+    );
+    db.prepare('INSERT INTO subagent_task_attempts (task_id, attempt, cwd, status, result) VALUES (?, ?, ?, ?, ?)').run(
+      'legacy-attempt-task', 1, tmp, 'completed', 'legacy attempt result',
+    );
+
+    const store = new SubagentHistoryStore();
+    expect(store.listTaskAttempts(tmp, 'legacy-attempt-task').map((attempt) => ({ attempt: attempt.attempt, result: attempt.result }))).toEqual([
+      { attempt: 1, result: 'legacy attempt result' },
+    ]);
+
+    store.upsertTask(tmp, {
+      id: 'legacy-attempt-task',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'legacy work',
+      created_at: createdAt,
+      attempt: 2,
+      result: 'continued attempt result',
+    } as any);
+
+    const columns = db.prepare('PRAGMA table_info(subagent_task_attempts)').all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'agent',
+      'mode',
+      'task',
+      'created_at',
+      'nested_session_path',
+      'continuation_prompt',
+      'system_prompt',
+      'error_metadata_json',
+      'error_category',
+      'thread_snapshot_json',
+    ]));
+
+    const reopened = new SubagentHistoryStore();
+    expect(reopened.listTaskAttempts(tmp, 'legacy-attempt-task').map((attempt) => ({ attempt: attempt.attempt, result: attempt.result }))).toEqual([
+      { attempt: 1, result: 'legacy attempt result' },
+      { attempt: 2, result: 'continued attempt result' },
+    ]);
+    expect(reopened.getTask(tmp, 'legacy-attempt-task')).toMatchObject({ attempt: 2, result: 'continued attempt result' });
   });
 
   it('ignores malformed persisted error metadata json safely while preserving legacy error text', () => {
@@ -823,6 +1015,97 @@ describe('manager and history integration', () => {
     const freshManager = new SubagentManager(mockRunner());
     const persisted = freshManager.getTask(result.task_ids[0], tmp);
     expect(persisted).toMatchObject({ model: 'mock/model', effort: 'high', model_source: 'orchestrator', effort_source: 'profile' });
+  });
+
+  it('continues a completed task under the same task id, reuses the nested session, and persists attempts across reloads', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'nested-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    const runner = vi.fn<SubagentRunner>(async ({ effectiveProfile, nested_session_path, continuation, onActivity }) => {
+      onActivity?.({
+        message: 'runner session ready',
+        nested_session_path: nestedSessionPath,
+        thread_snapshot: continuation
+          ? { version: 1, source: 'events', items: [{ type: 'user', label: 'continuation', text: continuation.prompt }] }
+          : undefined,
+      } as any);
+      return {
+        result: continuation ? `continued with ${continuation.prompt}` : 'initial result',
+        model: effectiveProfile?.model.label.replace(/^(?:profile|orchestrator): /, ''),
+        effort: effectiveProfile?.effort.value,
+        fallback_used: false,
+        nested_session_path: nestedSessionPath,
+      } as any;
+    });
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { model: 'profile/default', effort: 'medium' } } }));
+    const manager = new SubagentManager(runner);
+
+    const initial = await manager.run({ agent: 'analyst', task: 'initial delegated work', mode: 'task' }, { cwd: tmp });
+    const taskId = initial.task_ids[0]!;
+    const continued = await manager.continueTask({ task_id: taskId, prompt: 'Please continue with the fix.' }, { cwd: tmp });
+
+    expect(continued.task_ids).toEqual([taskId]);
+    expect(continued.results?.[0]).toMatchObject({
+      id: taskId,
+      status: 'completed',
+      attempt: 2,
+      nested_session_path: nestedSessionPath,
+      continuation_prompt: 'Please continue with the fix.',
+      result: 'continued with Please continue with the fix.',
+      model: 'profile/default',
+      effort: 'medium',
+    });
+    expect(runner).toHaveBeenNthCalledWith(1, expect.objectContaining({ nested_session_path: undefined, continuation: undefined }));
+    expect(runner).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      taskId,
+      nested_session_path: nestedSessionPath,
+      continuation: expect.objectContaining({ prompt: 'Please continue with the fix.', attempt: 2 }),
+    }));
+
+    const freshHistory = new SubagentHistoryStore();
+    expect(freshHistory.getTask(tmp, taskId)).toMatchObject({ attempt: 2, nested_session_path: nestedSessionPath, continuation_prompt: 'Please continue with the fix.' });
+    expect(freshHistory.listTaskAttempts(tmp, taskId).map((attempt) => ({ attempt: attempt.attempt, result: attempt.result }))).toEqual([
+      { attempt: 1, result: 'initial result' },
+      { attempt: 2, result: 'continued with Please continue with the fix.' },
+    ]);
+  });
+
+  it('re-resolves configured profiles for continuation overrides without mutating project config and rejects non-terminal continuations', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'resume-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    const runner = vi.fn<SubagentRunner>(async ({ effectiveProfile, nested_session_path, continuation, signal }) => {
+      if (!continuation) {
+        return await new Promise((resolve) => setTimeout(() => resolve({
+          result: 'initial complete',
+          model: 'mock/initial',
+          effort: 'low',
+          fallback_used: false,
+          nested_session_path: nestedSessionPath,
+        } as any), 30));
+      }
+      return {
+        result: 'continued with override',
+        model: effectiveProfile?.model.label.replace(/^(?:profile|orchestrator): /, ''),
+        effort: effectiveProfile?.effort.value,
+        fallback_used: false,
+        nested_session_path: nested_session_path,
+      } as any;
+    });
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { model: 'profile/after', effort: 'high' } } }));
+    const manager = new SubagentManager(runner);
+
+    const initial = await manager.run({ agent: 'analyst', task: 'first pass', mode: 'task' }, { cwd: tmp });
+    const taskId = initial.task_ids[0]!;
+    const configBefore = fs.readFileSync(path.join(tmp, '.pi', 'subagents.json'), 'utf8');
+    const continued = await manager.continueTask({ task_id: taskId, prompt: 'Continue with a different effort.', model: 'override/custom', effort: 'xhigh' }, { cwd: tmp });
+
+    expect(continued.results?.[0]).toMatchObject({ model: 'override/custom', effort: 'xhigh', model_source: 'orchestrator', effort_source: 'orchestrator', attempt: 2 });
+    expect(fs.readFileSync(path.join(tmp, '.pi', 'subagents.json'), 'utf8')).toBe(configBefore);
+
+    const runningManager = new SubagentManager(runner);
+    const background = await runningManager.run({ agent: 'analyst', task: 'still running', mode: 'background' }, { cwd: tmp });
+    await expect(runningManager.continueTask({ task_id: background.task_ids[0]!, prompt: 'should fail' }, { cwd: tmp })).rejects.toThrow('Only completed, failed, or cancelled subagent tasks can continue.');
   });
 
 });

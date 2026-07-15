@@ -53,6 +53,7 @@ describe('compatibility smoke', () => {
     expect(tools).toEqual([
       'subagent_list_agents',
       'subagent_run',
+      'subagent_continue',
       'subagent_status',
       'subagent_result',
       'subagent_list_tasks',

@@ -146,12 +146,72 @@ describe('thread view and render', () => {
     }
   });
 
-  it('includes the delegated orchestrator prompt and context as first user rows in thread snapshots', () => {
-    const builder = new ThreadSnapshotBuilder('delegated prompt body', 'orchestrator context body');
-    const snapshot = builder.snapshot();
+  it('groups initial and continued messages chronologically under explicit attempt boundaries without duplicating context', () => {
+    const first = new ThreadSnapshotBuilder('delegated prompt body', 'orchestrator context body', tmp, undefined, 'delegated_task', 1)
+      .finalize([{ role: 'assistant', content: [{ type: 'text', text: 'first response' }] }]);
+    const second = new ThreadSnapshotBuilder('continue with step two', 'orchestrator context body', tmp, first, 'continuation', 2)
+      .finalize([{ role: 'assistant', content: [{ type: 'text', text: 'second response' }] }]);
+    const third = new ThreadSnapshotBuilder('continue with step three', 'orchestrator context body', tmp, second, 'continuation', 3)
+      .finalize([{ role: 'assistant', content: [{ type: 'text', text: 'third response' }] }]);
 
-    expect(snapshot?.items[0]).toMatchObject({ type: 'user', label: 'delegated_task', text: 'delegated prompt body' });
-    expect(snapshot?.items[1]).toMatchObject({ type: 'user', label: 'context', text: 'orchestrator context body' });
+    const sequence = third?.items.map((item: any) => {
+      if (item.type === 'attempt') return `attempt:${item.attempt}`;
+      if (item.type === 'user') return `${item.label}:${item.text}`;
+      if (item.type === 'assistant') return `assistant:${item.message.content.map((part: any) => part.text ?? part.thinking ?? '').join('')}`;
+      return item.type;
+    });
+    expect(sequence).toEqual([
+      'attempt:1',
+      'context:orchestrator context body',
+      'delegated_task:delegated prompt body',
+      'assistant:first response',
+      'attempt:2',
+      'continuation:continue with step two',
+      'assistant:second response',
+      'attempt:3',
+      'continuation:continue with step three',
+      'assistant:third response',
+    ]);
+
+    const rendered = renderText(third);
+    expect(rendered.match(/orchestrator context body/g)).toHaveLength(1);
+    expect(rendered).toContain('attempt 1');
+    expect(rendered).toContain('orchestrator context');
+    expect(rendered).toContain('delegated task');
+    expect(rendered).toContain('attempt 2');
+    expect(rendered).toContain('continuation prompt');
+    expect(rendered.indexOf('first response')).toBeLessThan(rendered.indexOf('attempt 2'));
+    expect(rendered.indexOf('continue with step two')).toBeLessThan(rendered.indexOf('second response'));
+    expect(rendered.indexOf('second response')).toBeLessThan(rendered.indexOf('attempt 3'));
+  });
+
+  it('renders legacy continuation snapshots as auditable attempt groups without repeating embedded context', () => {
+    const legacy = {
+      version: 1,
+      source: 'mixed',
+      items: [
+        { type: 'user', label: 'delegated_task', text: '## orchestrator context\nshared legacy context\n\n## delegated task\ngenerate the original code' },
+        { type: 'user', label: 'context', text: 'shared legacy context' },
+        { type: 'user', label: 'continuation', text: 'repeat the original code' },
+        { type: 'user', label: 'continuation', text: 'change only the suffix' },
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'CODE: ORIGINAL' }] } },
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'CODE: ORIGINAL' }] } },
+        { type: 'assistant', id: 'streaming-assistant-1', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'selecting suffix' }] } },
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'CODE: UPDATED' }] } },
+      ],
+    } as any;
+
+    const rendered = renderText(legacy);
+    expect(rendered.match(/shared legacy context/g)).toHaveLength(1);
+    expect(rendered).toContain('attempt 1');
+    expect(rendered).toContain('attempt 2');
+    expect(rendered).toContain('attempt 3');
+    expect(rendered.indexOf('generate the original code')).toBeLessThan(rendered.indexOf('CODE: ORIGINAL'));
+    expect(rendered.indexOf('CODE: ORIGINAL')).toBeLessThan(rendered.indexOf('attempt 2'));
+    expect(rendered.indexOf('repeat the original code')).toBeLessThan(rendered.lastIndexOf('CODE: ORIGINAL'));
+    expect(rendered.lastIndexOf('CODE: ORIGINAL')).toBeLessThan(rendered.indexOf('attempt 3'));
+    expect(rendered.indexOf('change only the suffix')).toBeLessThan(rendered.indexOf('selecting suffix'));
+    expect(rendered.indexOf('selecting suffix')).toBeLessThan(rendered.indexOf('CODE: UPDATED'));
   });
 
   it('resolves registered extension tool definitions from pi/context arrays and maps', () => {

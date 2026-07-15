@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import { readSubagentsConfig } from '../config.js';
 import type { SubagentManager } from '../manager.js';
 import type { SubagentTask } from '../types.js';
-import { formatTask, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
+import { appendSubagentResumeGuidance, formatTask, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
 import { progressText } from '../render/tools/progress.js';
 import { renderSubagentRunCall, renderSubagentRunResult } from '../render/tools/subagent-run.js';
 import { installBackgroundHandoffShortcut } from './background-handoff-state.js';
@@ -90,8 +90,16 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
           ? backgroundLaunchContent(result.task_ids, 'Started')
           : formatTaskModeContent(result.results ?? []);
         const details = compactResultDetails(result as any);
-        return failedTasks.length ? { ...fail(`${failedTasks.length} subagent task(s) failed or were cancelled.\n\n${failedTasks.map(formatTask).join('\n\n')}`), details } : ok(text, details);
-      } catch (e) { return fail(e); }
+        const failureText = appendSubagentResumeGuidance(
+          `${failedTasks.length} subagent task(s) failed or were cancelled.\n\n${failedTasks.map(formatTask).join('\n\n')}`,
+          failedTasks,
+        );
+        return failedTasks.length ? { ...fail(failureText), details } : ok(text, details);
+      } catch (e) {
+        if (!cancelledByDoubleEscape) return fail(e);
+        const message = e instanceof Error ? e.message : String(e);
+        return fail(appendSubagentResumeGuidance(message, latestTasks.length ? latestTasks : [{ status: 'cancelled' }]));
+      }
       finally {
         active = false;
         if (interval) clearInterval(interval);
