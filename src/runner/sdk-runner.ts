@@ -1,5 +1,5 @@
 import { resolveEffectiveSubagentProfile } from '../profile-resolver.js';
-import { SubagentStructuredError, classifyFallbackFailure } from '../error-metadata.js';
+import { SubagentStructuredError } from '../error-metadata.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
 import { getInteractionSessionRegistry } from './interaction-session-registry.js';
 import { loadPiSdkModule } from './pi-sdk-module.js';
@@ -117,7 +117,6 @@ function providerFromModel(model: any): string | undefined {
 export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, onActivity }) => {
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
-  const current = ctx?.model;
   const effort = profile.effort.value;
   const tools = definition.tools?.length ? definition.tools : config.default_tools;
   const systemPrompt = definition.instructions;
@@ -152,27 +151,12 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
   } catch (error) {
     if (signal.aborted) throw new Error('Subagent was aborted');
     const preferredLabel = modelLabel(preferred) ?? modelRefLabel(profile.model.value) ?? 'unknown';
-    const currentLabel = modelLabel(current) ?? 'unknown';
     const primaryFailure = structuredMetadataFromError(error, {
       phase: isNonRetryableSubagentError(error) ? 'runner_session' : 'runner_invoke',
       provider: providerFromModel(preferred),
       model: preferredLabel,
       operation: 'session.prompt',
     });
-    onActivity?.({ message: `failed/stalled on ${preferredLabel}; falling back to ${currentLabel}`, effort });
-    ctx?.ui?.notify?.(`Subagent ${definition.name} failed/stalled on selected model ${preferredLabel}: ${primaryFailure.message}. Falling back to current model ${currentLabel}.`, 'warning');
-    if (!current || current === preferred) throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure));
-    if (isNonRetryableSubagentError(error)) throw new SubagentStructuredError(primaryFailure);
-    try {
-      const { result, usage, thread_snapshot, interaction_request, system_prompt } = await attempt(current);
-      return { result, usage, thread_snapshot, interaction_request, system_prompt, model: currentLabel, effort, fallback_used: true };
-    } catch (fallbackError) {
-      throw new SubagentStructuredError(classifyFallbackFailure(primaryFailure, structuredMetadataFromError(fallbackError, {
-        phase: 'runner_invoke',
-        provider: providerFromModel(current),
-        model: currentLabel,
-        operation: 'session.prompt',
-      })));
-    }
+    throw new SubagentStructuredError(primaryFailure);
   }
 };

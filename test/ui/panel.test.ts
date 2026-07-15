@@ -141,6 +141,60 @@ describe('subagents panel and extension ui', () => {
     }
   });
 
+  it('reuses native bash tool components across rerenders and bypasses stale body caching while tools are active', () => {
+    resetPiComponentCacheForTests();
+    const packageRoot = path.join(tmp, 'fake-pi-panel-active-bash-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    const shimDir = path.join(tmp, 'bin-panel-active-bash');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
+    fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
+      let constructions = 0;
+      exports.__constructions = () => constructions;
+      exports.createBashToolDefinition = (cwd) => ({ name: 'bash', cwd, kind: 'native-bash' });
+      exports.ToolExecutionComponent = class {
+        constructor(name, id, args) {
+          constructions += 1;
+          this.command = args.command;
+          this.renderCount = 0;
+        }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult() {}
+        setExpanded() {}
+        render() {
+          this.renderCount += 1;
+          return ['native-bash-render:' + this.renderCount + ':' + this.command];
+        }
+      };
+    `);
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = path.join(shimDir, 'pi');
+    try {
+      const now = new Date().toISOString();
+      const task: SubagentTask = {
+        id: 'subtask_active_bash_component',
+        agent: 'analyst',
+        mode: 'task',
+        status: 'running',
+        task: 'keep native bash active',
+        created_at: now,
+        last_activity_at: now,
+        thread_snapshot: { version: 1, updated_at: now, source: 'events', items: [{ type: 'tool', tool_call_id: 'bash-1', name: 'bash', status: 'running', arguments: { command: 'npm test', timeout: 15 }, started_at: now }] },
+      };
+      const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp, tui: { requestRender() {} } });
+
+      expect(panel.render(160).join('\n')).toContain('native-bash-render:1:npm test');
+      expect(panel.render(160).join('\n')).toContain('native-bash-render:2:npm test');
+      expect(require(packageRoot).__constructions()).toBe(1);
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
+  });
+
   it('keeps legacy history panel fallback when thread_snapshot is missing or invalid', () => {
     const baseTask: SubagentTask = {
       id: 'subtask_legacy_1',
@@ -371,12 +425,14 @@ describe('subagents panel and extension ui', () => {
     fs.mkdirSync(shimDir);
     fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
     fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
-      exports.BashExecutionComponent = class {
-        constructor() {}
-        appendOutput(output) { this.output = output; }
-        setComplete() {}
+      exports.createBashToolDefinition = (cwd) => ({ name: 'bash', cwd, kind: 'native-bash' });
+      exports.ToolExecutionComponent = class {
+        constructor(name, id, args) { this.command = args.command; }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult(result) { this.output = result.preview || ''; }
         setExpanded() {}
-        render() { return ['go test results:\\r\\n' + this.output]; }
+        render() { return ['go test results:\r\n' + this.output]; }
       };
     `);
     const oldArgv1 = process.argv[1];
@@ -393,14 +449,21 @@ describe('subagents panel and extension ui', () => {
           version: 1,
           source: 'events',
           items: [{
-            type: 'bash',
-            command: 'go test ./...',
-            output: [
-              'ok github.com/example/project/internal/components 0.929s',
-              'ok github.com/example/project/internal/components/communitytool 0.044s',
-            ].join('\n'),
+            type: 'tool',
+            name: 'bash',
             status: 'completed',
-            exitCode: 0,
+            arguments: { command: 'go test ./...' },
+            result: {
+              content: [{ type: 'text', text: [
+                'ok github.com/example/project/internal/components 0.929s',
+                'ok github.com/example/project/internal/components/communitytool 0.044s',
+              ].join('\n') }],
+              preview: [
+                'ok github.com/example/project/internal/components 0.929s',
+                'ok github.com/example/project/internal/components/communitytool 0.044s',
+              ].join('\n'),
+              isError: false,
+            },
           }],
         },
       };
@@ -417,7 +480,7 @@ describe('subagents panel and extension ui', () => {
 
       expect(rendered.every((line) => !line.includes('\n') && !line.includes('\r'))).toBe(true);
       expect(rendered.every((line) => line.length <= 48)).toBe(true);
-      expect(rendered.join('\n')).toContain('go test results:');
+      expect(rendered.join('\n')).toContain('go test ./...');
       expect(rendered.join('\n')).toContain('github.com/example/project/internal/component');
     } finally {
       process.argv[1] = oldArgv1;
@@ -435,10 +498,12 @@ describe('subagents panel and extension ui', () => {
     fs.mkdirSync(shimDir);
     fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
     fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
-      exports.BashExecutionComponent = class {
-        constructor(command) { this.command = command; this.expanded = false; }
-        appendOutput(output) { this.output = output; }
-        setComplete() {}
+      exports.createBashToolDefinition = (cwd) => ({ name: 'bash', cwd, kind: 'native-bash' });
+      exports.ToolExecutionComponent = class {
+        constructor(name, id, args) { this.command = args.command; this.expanded = false; }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult(result) { this.output = result.preview || ''; }
         setExpanded(value) { this.expanded = value; }
         render() { return ['bash-expanded:' + this.expanded + ':' + this.command + ':' + this.output]; }
       };
@@ -453,7 +518,7 @@ describe('subagents panel and extension ui', () => {
         status: 'completed',
         task: 'toggle component expansion',
         created_at: new Date().toISOString(),
-        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'bash', command: 'npm test', output: 'long output', status: 'completed', exitCode: 0 }] },
+        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'tool', name: 'bash', status: 'completed', arguments: { command: 'npm test', timeout: 15 }, result: { content: [{ type: 'text', text: 'long output' }], preview: 'long output', isError: false } }] },
       };
       const keys: Record<string, string> = { 'ctrl+o': '\u000f' };
       const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, (data, key) => data === keys[key], (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp, tui: { requestRender() {} } });
@@ -479,10 +544,12 @@ describe('subagents panel and extension ui', () => {
     fs.mkdirSync(shimDir);
     fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
     fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
-      exports.BashExecutionComponent = class {
-        constructor(command) { this.command = command; this.expanded = false; }
-        appendOutput(output) { this.output = output; }
-        setComplete() {}
+      exports.createBashToolDefinition = (cwd) => ({ name: 'bash', cwd, kind: 'native-bash' });
+      exports.ToolExecutionComponent = class {
+        constructor(name, id, args) { this.command = args.command; this.expanded = false; }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult(result) { this.output = result.preview || ''; }
         setExpanded(value) { this.expanded = value; }
         render() { return ['bash-expanded:' + this.expanded + ':' + this.command + ':' + this.output]; }
       };
@@ -497,7 +564,7 @@ describe('subagents panel and extension ui', () => {
         status: 'completed',
         task: 'toggle component expansion with injected keybindings',
         created_at: new Date().toISOString(),
-        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'bash', command: 'npm test', output: 'long output', status: 'completed', exitCode: 0 }] },
+        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'tool', name: 'bash', status: 'completed', arguments: { command: 'npm test', timeout: 15 }, result: { content: [{ type: 'text', text: 'long output' }], preview: 'long output', isError: false } }] },
       };
       const keybindings = { matches: (data: string, keybinding: string) => keybinding === 'app.tools.expand' && data === '\u001b[111;5u' };
       const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, createSubagentsPanelKeyMatcher(keybindings), (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp, tui: { requestRender() {} } });
@@ -647,19 +714,40 @@ describe('subagents panel and extension ui', () => {
       mode: 'task',
       status: 'running',
       task: 'keep shell visible',
-      created_at: new Date().toISOString(),
+      created_at: '2026-01-01T00:00:00.000Z',
+      started_at: '2026-01-01T00:00:00.000Z',
+      ended_at: '2026-01-01T00:00:10.000Z',
       last_activity: 'rendering snapshot',
       model: 'mock/model',
       effort: 'high',
+      usage: { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 50_000, turns: 2 },
       thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status', text: 'thread body visible' }] },
     };
-    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text, bold: (text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
-    const rendered = panel.render(120).join('\n');
+    const panel = new SubagentsHistoryPanel(
+      [task],
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      42,
+      undefined,
+      undefined,
+      undefined,
+      'ctrl+shift+q',
+      { timeoutMs: 2_600_000, stallTimeoutMs: 120_000, contextWindowForTask: () => 200_000 },
+    );
+    const rendered = panel.render(160).join('\n');
 
     expect(rendered).toContain('subagents');
     expect(rendered).toContain('agent: reviewer');
     expect(rendered).toContain('status: running');
+    expect(rendered).toContain('effort: high (ctrl+shift+q cancel)');
     expect(rendered).toContain('model: mock/model');
+    expect(rendered).toContain('duration: 10s (timeout 43m20s)');
+    expect(rendered).toContain('usage: 2 turns ↑1.0k ↓500 ctx:50k (25%)');
+    expect(rendered).toContain('last: rendering snapshot (stall 2m)');
     expect(rendered).toContain('task: keep shell visible');
     expect(rendered).toContain('● reviewer:running effort:high');
     expect(rendered).toContain('thread body visible');

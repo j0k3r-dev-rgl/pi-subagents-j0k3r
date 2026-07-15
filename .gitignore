@@ -5,3 +5,5 @@ dist/
 .pi/skill-registry.json
 .pi/skill-registry.md
 .pi/workspace-code-graph/
+openspec/
+.tmp/

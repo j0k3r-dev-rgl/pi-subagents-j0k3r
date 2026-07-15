@@ -41,22 +41,30 @@ function resultTextFromContent(content: unknown): string | undefined {
   return text || undefined;
 }
 
+function boundUnknown(value: unknown, limit = SNAPSHOT_TEXT_LIMIT): unknown {
+  if (typeof value === 'string') return truncateSnapshotText(value, limit);
+  if (Array.isArray(value)) return value.slice(0, 50).map((entry) => boundUnknown(entry, limit));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 50).map(([key, entry]) => [key, boundUnknown(entry, limit)]));
+}
+
 function resultPayload(result: unknown, isError = false): SubagentToolResultPayload {
   let text = '';
   let details: unknown;
-  if (typeof result === 'string') text = result;
-  else if (result && typeof result === 'object') {
+  if (typeof result === 'string') {
+    text = result;
+    details = result;
+  } else if (result && typeof result === 'object') {
     const record = result as Record<string, unknown>;
-    details = record.details;
+    details = boundUnknown(record.details ?? record);
     const candidate = resultTextFromContent(record.content) ?? record.output ?? record.text ?? record.error ?? record.stderr ?? record.stdout;
     text = typeof candidate === 'string' ? candidate : shortJson(result, SNAPSHOT_TEXT_LIMIT);
-  } else if (result !== undefined) text = String(result);
+  } else if (result !== undefined) {
+    text = String(result);
+    details = String(result);
+  }
   const bounded = truncateSnapshotText(text, SNAPSHOT_TEXT_LIMIT) ?? '';
   return { content: bounded ? [{ type: 'text', text: bounded }] : [], details, isError, preview: bounded };
-}
-
-function isBashTool(name: string): boolean {
-  return name === 'bash' || name === 'shell' || name === 'command' || name === 'exec';
 }
 
 function parseRawToolJson(text: string): { keys: string[]; kind: string } | undefined {
@@ -69,22 +77,6 @@ function parseRawToolJson(text: string): { keys: string[]; kind: string } | unde
   } catch {
     return undefined;
   }
-}
-
-function formatToolCall(name: string, args: any): string {
-  const input = args ?? {};
-  if (name === 'read') {
-    const file = input.path ?? input.file_path ?? input.file ?? '';
-    const offset = input.offset ?? 1;
-    const limit = input.limit;
-    const range = limit ? `:${offset}-${offset + limit - 1}` : offset && offset !== 1 ? `:${offset}` : '';
-    return `read ${file}${range}`.trim();
-  }
-  if (name === 'bash') return `bash ${String(input.command ?? '').split('\n')[0] ?? ''}`.trim();
-  if (name === 'edit') return `edit ${input.path ?? input.file_path ?? ''}`.trim();
-  if (name === 'write') return `write ${input.path ?? input.file_path ?? ''}`.trim();
-  if (name.startsWith('memory_')) return name;
-  return `${name} ${shortJson(input)}`.trim();
 }
 
 export class ThreadSnapshotBuilder {
@@ -117,14 +109,15 @@ export class ThreadSnapshotBuilder {
       const name = event.toolName ?? event.name ?? 'tool';
       const tool_call_id = eventToolCallId(event);
       this.dropTrailingRawToolJson(name, tool_call_id);
-      if (isBashTool(name)) {
-        const command = String((event.args ?? event.input ?? {}).command ?? formatToolCall(name, event.args ?? event.input ?? {}));
-        const item: any = { type: 'bash', id: tool_call_id, tool_call_id, command: truncateSnapshotText(command) ?? '', status: 'running' };
-        this.toolIndex.set(tool_call_id ?? `item-${this.items.length}`, this.items.length);
-        this.items.push(item);
-        return;
-      }
-      const item: SubagentToolItem = { type: 'tool', id: tool_call_id, tool_call_id, name, arguments: event.args ?? event.input ?? {}, status: 'running', started_at: now };
+      const item: SubagentToolItem = {
+        type: 'tool',
+        id: tool_call_id,
+        tool_call_id,
+        name,
+        arguments: boundUnknown(event.args ?? event.input ?? {}),
+        status: 'running',
+        started_at: now,
+      };
       this.toolIndex.set(tool_call_id ?? `item-${this.items.length}`, this.items.length);
       this.items.push(item);
       return;
@@ -135,8 +128,7 @@ export class ThreadSnapshotBuilder {
       if (index === undefined) return;
       const item: any = this.items[index];
       const payload = resultPayload(event.partialResult, false);
-      if (item.type === 'bash') item.output = truncateSnapshotText([item.output, payload.preview].filter(Boolean).join('\n'));
-      else if (item.type === 'tool') item.result = payload;
+      if (item.type === 'tool') item.result = payload;
       if (item.type === 'tool') item.status = 'partial';
       return;
     }
@@ -150,14 +142,7 @@ export class ThreadSnapshotBuilder {
         return;
       }
       const item: any = this.items[index];
-      if (item.type === 'bash') {
-        const result = event.result && typeof event.result === 'object' ? event.result as Record<string, unknown> : {};
-        const output = payload.preview ?? '';
-        item.output = truncateSnapshotText(output);
-        item.truncated = typeof output === 'string' && output.endsWith('…');
-        item.exitCode = typeof result.exitCode === 'number' ? result.exitCode : undefined;
-        item.status = event.isError ? 'failed' : 'completed';
-      } else if (item.type === 'tool') {
+      if (item.type === 'tool') {
         item.status = event.isError ? 'failed' : 'completed';
         item.result = payload;
         item.ended_at = now;

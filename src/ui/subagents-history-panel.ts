@@ -22,7 +22,17 @@ function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
-function formatUsage(usage?: UsageStats): string {
+function formatTimeout(milliseconds: number | undefined): string | undefined {
+  if (!Number.isFinite(milliseconds) || milliseconds === undefined || milliseconds <= 0) return undefined;
+  let seconds = Math.max(1, Math.round(milliseconds / 1000));
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  return [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '', seconds ? `${seconds}s` : ''].filter(Boolean).join('');
+}
+
+function formatUsage(usage?: UsageStats, contextWindow?: number): string {
   if (!usage) return '';
   const parts: string[] = [];
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? 's' : ''}`);
@@ -31,9 +41,23 @@ function formatUsage(usage?: UsageStats): string {
   if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
   if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
-  if (usage.contextTokens) parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+  if (usage.contextTokens) {
+    let context = `ctx:${formatTokens(usage.contextTokens)}`;
+    if (Number.isFinite(contextWindow) && contextWindow !== undefined && contextWindow > 0) {
+      const percentage = (usage.contextTokens / contextWindow) * 100;
+      const formatted = Number.isInteger(percentage) ? percentage.toFixed(0) : percentage.toFixed(1);
+      context += ` (${formatted}%)`;
+    }
+    parts.push(context);
+  }
   return parts.join(' ');
 }
+
+type SubagentsHistoryPanelDisplayOptions = {
+  timeoutMs?: number;
+  stallTimeoutMs?: number;
+  contextWindowForTask?: (task: SubagentTask) => number | undefined;
+};
 
 const TERMINAL_ESCAPE_RE = /\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -70,6 +94,12 @@ function hasEquivalentSnapshotError(snapshot: SubagentThreadSnapshot, errorText:
   });
 }
 
+function snapshotHasActiveTools(snapshot: SubagentThreadSnapshot | undefined): boolean {
+  if (!snapshot?.items?.length) return false;
+  return snapshot.items.some((item) => (item.type === 'tool' && ['pending', 'running', 'partial'].includes(item.status))
+    || (item.type === 'bash' && (item.status === undefined || item.status === 'running')));
+}
+
 export class SubagentsHistoryPanel {
   private selected = 0;
   private scroll = 0;
@@ -100,6 +130,7 @@ export class SubagentsHistoryPanel {
     private initialSelectedTaskId?: string,
     private cancelSelectedTask?: (id: string) => void,
     private detailCancelShortcut = 'x',
+    private displayOptions: SubagentsHistoryPanelDisplayOptions = {},
   ) {}
 
   invalidate(): void {}
@@ -247,11 +278,21 @@ export class SubagentsHistoryPanel {
     }
 
     const task = this.resolveTaskForBody(tasks[this.selected]!);
-    const usage = formatUsage(task.usage);
-    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}  ${dim('agent:')} ${accent(task.agent)}  ${dim('status:')} ${status(task)}  ${dim('effort:')} ${accent(task.effort ?? 'default/current')}`));
-    lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}  ${dim('id:')} ${task.id}  ${dim('duration:')} ${fmtDuration(task)}`));
+    let contextWindow: number | undefined;
+    try { contextWindow = this.displayOptions.contextWindowForTask?.(task); } catch {}
+    const usage = formatUsage(task.usage, contextWindow);
+    const timeout = formatTimeout(this.displayOptions.timeoutMs);
+    const stallTimeout = formatTimeout(this.displayOptions.stallTimeoutMs);
+    const cancelHint = (task.status === 'queued' || task.status === 'running') && this.detailCancelShortcut
+      ? ` ${dim(`(${this.detailCancelShortcut} cancel)`)}`
+      : '';
+    const timeoutHint = timeout ? ` ${dim(`(timeout ${timeout})`)}` : '';
+    const stallHint = stallTimeout ? ` ${dim(`(stall ${stallTimeout})`)}` : '';
+    const lastActivity = [task.last_activity ?? 'n/a', task.last_activity_at ? dim(task.last_activity_at) : ''].filter(Boolean).join(' ');
+    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}  ${dim('agent:')} ${accent(task.agent)}  ${dim('status:')} ${status(task)}  ${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
+    lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}  ${dim('id:')} ${task.id}  ${dim('duration:')} ${fmtDuration(task)}${timeoutHint}`));
     if (usage) lines.push(line(`${dim('usage:')} ${usage}`));
-    lines.push(line(`${dim('last:')} ${task.last_activity ?? 'n/a'} ${dim(task.last_activity_at ?? '')}`));
+    lines.push(line(`${dim('last:')} ${lastActivity}${stallHint}`));
     lines.push(line(`${dim('task:')} ${clip(task.task, bodyWidth - 6)}`));
     lines.push(this.taskStrip(bodyWidth));
     lines.push(divider);
@@ -386,12 +427,16 @@ export class SubagentsHistoryPanel {
   }
 
   private bodyLinesFor(task: SubagentTask, width: number): string[] {
+    const activeSnapshot = isValidThreadSnapshot(task.thread_snapshot) ? task.thread_snapshot : undefined;
+    const allowCache = !snapshotHasActiveTools(activeSnapshot);
     const cacheKey = this.bodyCacheKey(task, width);
-    const cached = this.bodyCache.get(cacheKey);
-    if (cached) return cached;
+    if (allowCache) {
+      const cached = this.bodyCache.get(cacheKey);
+      if (cached) return cached;
+    }
     let lines: string[];
-    if (isValidThreadSnapshot(task.thread_snapshot)) {
-      const rendered = renderThreadBody(task.thread_snapshot, {
+    if (activeSnapshot) {
+      const rendered = renderThreadBody(activeSnapshot, {
         ...this.renderContext,
         theme: this.renderContext.theme ?? this.theme,
         cwd: this.renderContext.cwd ?? process.cwd(),
@@ -402,12 +447,13 @@ export class SubagentsHistoryPanel {
         toolOutputExpanded: this.toolOutputExpanded,
       });
       lines = rendered.length ? rendered : [''];
-      if ((task.status === 'failed' || task.status === 'cancelled') && task.error && !hasEquivalentSnapshotError(task.thread_snapshot, task.error)) {
+      if ((task.status === 'failed' || task.status === 'cancelled') && task.error && !hasEquivalentSnapshotError(activeSnapshot, task.error)) {
         lines = [...lines, '', '# error', task.error];
       }
     } else {
       lines = [this.executionFlowFor(task)];
     }
+    if (!allowCache) return lines;
     this.bodyCache.set(cacheKey, lines);
     if (this.bodyCache.size > 50) {
       const oldest = this.bodyCache.keys().next().value;

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SubagentStructuredError, classifyFallbackFailure, classifyThrownError, deriveErrorString, normalizeErrorMetadata } from '../../src/error-metadata.js';
+import { SubagentStructuredError, classifyThrownError, deriveErrorString, normalizeErrorMetadata } from '../../src/error-metadata.js';
 import type { SubagentDefinition, SubagentErrorMetadata, SubagentsConfig } from '../../src/types.js';
 
 describe('subagent runner structured errors', () => {
@@ -60,14 +60,13 @@ describe('subagent runner structured errors', () => {
       await expect(promise).rejects.toMatchObject({
         error_metadata: expect.objectContaining({
           version: 1,
-          category: 'unknown_fallback',
-          attempts: [expect.objectContaining({ role: 'primary', category: testCase.category })],
+          category: testCase.category,
         }),
       });
       await promise.catch((error) => {
         expect(error.error_metadata.message.length).toBeLessThanOrEqual(1024);
-        expect(error.error_metadata.attempts).toHaveLength(1);
-        expect(error.error_metadata.attempts[0].message).not.toContain('sk-secret-');
+        expect(error.error_metadata.attempts).toBeUndefined();
+        expect(error.error_metadata.message).not.toContain('sk-secret-');
       });
     }
   });
@@ -83,8 +82,8 @@ describe('subagent runner structured errors', () => {
     await expect(promise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
         version: 1,
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'context_overflow', phase: 'assistant_final', role: 'primary' })],
+        category: 'context_overflow',
+        phase: 'assistant_final',
       }),
     });
   });
@@ -100,8 +99,7 @@ describe('subagent runner structured errors', () => {
     await expect(promise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
         version: 1,
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'malformed_thrown_value', role: 'primary' })],
+        category: 'malformed_thrown_value',
       }),
     });
   });
@@ -123,8 +121,8 @@ describe('subagent runner structured errors', () => {
       const error = await rejection;
       expect(error.error_metadata).toMatchObject({
         version: 1,
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'stall_timeout', phase: 'runner_session', role: 'primary' })],
+        category: 'stall_timeout',
+        phase: 'runner_session',
       });
     } finally {
       vi.useRealTimers();
@@ -140,8 +138,8 @@ describe('subagent runner structured errors', () => {
     }), { ctx: { model: undefined } });
     await expect(noTools.promise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'empty_response_no_tools', role: 'primary' })],
+        category: 'empty_response_no_tools',
+        phase: 'assistant_final',
       }),
     });
 
@@ -157,8 +155,8 @@ describe('subagent runner structured errors', () => {
     }), { ctx: { model: undefined } });
     await expect(afterTools.promise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'empty_response_after_tools', role: 'primary' })],
+        category: 'empty_response_after_tools',
+        phase: 'assistant_final',
       }),
     });
 
@@ -174,13 +172,12 @@ describe('subagent runner structured errors', () => {
     }), { ctx: { model: undefined } });
     await expect(toolFailure.promise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'tool_failure', phase: 'tool_execution', role: 'primary' })],
+        category: 'tool_failure',
+        phase: 'tool_execution',
       }),
     });
     await toolFailure.promise.catch((error) => {
-      expect(error.error_metadata.attempts).toHaveLength(1);
-      expect(error.error_metadata.attempts[0].details?.tool_names).toContain('read');
+      expect(error.error_metadata.details?.tool_names).toContain('read');
       expect(JSON.stringify(error.error_metadata)).not.toContain('sk-hidden');
       expect(JSON.stringify(error.error_metadata)).not.toContain('SECRET_FILE_BODY');
       expect(JSON.stringify(error.error_metadata)).not.toContain('/tmp/private.txt');
@@ -201,15 +198,12 @@ describe('subagent runner structured errors', () => {
     expect(recoveredResult).not.toHaveProperty('error_metadata');
   });
 
-  it('preserves primary and fallback failures in bounded attempts and clears terminal metadata on fallback success', async () => {
+  it('returns the original selected-model failure without retrying or notifying', async () => {
     vi.resetModules();
     const primaryModel = { provider: 'preferred', id: 'primary-model' };
     const fallbackModel = { provider: 'current', id: 'fallback-model' };
     const createAgentSession = vi.fn()
-      .mockReturnValueOnce({ session: { subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => { throw new Error('ECONNRESET primary network failure'); }), messages: [], dispose: vi.fn(async () => undefined) } })
-      .mockReturnValueOnce({ session: { subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => { throw new Error('429 fallback quota exceeded'); }), messages: [], dispose: vi.fn(async () => undefined) } })
-      .mockReturnValueOnce({ session: { subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => { throw new Error('ECONNRESET primary network failure'); }), messages: [], dispose: vi.fn(async () => undefined) } })
-      .mockReturnValueOnce({ session: { subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => undefined), messages: [{ role: 'assistant', content: [{ type: 'text', text: 'fallback recovered' }] }], dispose: vi.fn(async () => undefined) } });
+      .mockReturnValueOnce({ session: { subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => { throw new Error('ECONNRESET primary network failure'); }), messages: [], dispose: vi.fn(async () => undefined) } });
     vi.doMock('@earendil-works/pi-coding-agent', () => ({
       SessionManager: { inMemory: () => ({}) },
       createAgentSession,
@@ -227,7 +221,7 @@ describe('subagent runner structured errors', () => {
 
     const failedPromise = sdkSubagentRunner({
       definition,
-      task: 'runner fallback failure',
+      task: 'runner selected-model failure',
       cwd: '/workspace',
       ctx,
       config: sliceConfig,
@@ -235,27 +229,18 @@ describe('subagent runner structured errors', () => {
     });
     await expect(failedPromise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
-        category: 'fallback_failed',
-        attempts: [
-          expect.objectContaining({ role: 'primary', category: 'provider_network_error' }),
-          expect.objectContaining({ role: 'fallback', category: 'provider_rate_limit' }),
-        ],
+        category: 'provider_network_error',
+        source: expect.objectContaining({ model: 'preferred/primary-model' }),
       }),
     });
-
-    const recoveredResult = await sdkSubagentRunner({
-      definition,
-      task: 'runner fallback success',
-      cwd: '/workspace',
-      ctx,
-      config: sliceConfig,
-      signal: new AbortController().signal,
+    await failedPromise.catch((error) => {
+      expect(error.error_metadata.attempts).toBeUndefined();
     });
-    expect(recoveredResult).toMatchObject({ result: 'fallback recovered', fallback_used: true });
-    expect(recoveredResult).not.toHaveProperty('error_metadata');
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 
-  it('wraps a primary failure as unknown_fallback when current model matches preferred', async () => {
+  it('preserves the original selected-model failure when current model matches preferred', async () => {
     vi.resetModules();
     const sharedModel = { provider: 'preferred', id: 'primary-model' };
     const createAgentSession = vi.fn()
@@ -285,17 +270,12 @@ describe('subagent runner structured errors', () => {
 
     await expect(failedPromise).rejects.toMatchObject({
       error_metadata: expect.objectContaining({
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ role: 'primary', category: 'provider_network_error' })],
+        category: 'provider_network_error',
+        source: expect.objectContaining({ model: 'preferred/primary-model' }),
       }),
     });
     await failedPromise.catch((error) => {
-      expect(error.error_metadata.attempts).toHaveLength(1);
-      expect(error.error_metadata.attempts[0]).toMatchObject({
-        role: 'primary',
-        category: 'provider_network_error',
-        source: expect.objectContaining({ model: 'preferred/primary-model' }),
-      });
+      expect(error.error_metadata.attempts).toBeUndefined();
     });
   });
 });

@@ -103,6 +103,10 @@ function lastAssistantFailure(messages: any[]): { stopReason?: string; errorMess
   return undefined;
 }
 
+function eventToolCallId(event: any): string | undefined {
+  return event?.toolCallId ?? event?.tool_call_id ?? event?.toolUseId ?? event?.id;
+}
+
 function failingToolNames(snapshot?: SubagentThreadSnapshot): string[] {
   if (!snapshot?.items?.length) return [];
   const names = new Set<string>();
@@ -133,6 +137,7 @@ export async function promptWithInactivity(
   let lastActivity = Date.now();
   let stalled = false;
   let sawToolActivity = false;
+  const activeToolCallIds = new Set<string>();
   onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot() });
   const unsubscribe = session.subscribe?.((event: any) => {
     lastActivity = Date.now();
@@ -150,6 +155,9 @@ export async function promptWithInactivity(
     if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) {
       sawToolActivity = true;
       registerSubagentRuntimeToolDefinition(taskId, event?.toolName, session.getToolDefinition?.(event?.toolName));
+      const toolCallId = eventToolCallId(event);
+      if (event.type === 'tool_execution_start' && toolCallId) activeToolCallIds.add(toolCallId);
+      if (event.type === 'tool_execution_end' && toolCallId) activeToolCallIds.delete(toolCallId);
     }
     snapshotBuilder.update(event);
     const thread_snapshot = snapshotBuilder.snapshot();
@@ -203,7 +211,7 @@ export async function promptWithInactivity(
     if (message) onActivity?.({ message, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
   }) ?? (() => {});
   const interval = setInterval(() => {
-    if (!stalled && Date.now() - lastActivity > stallTimeoutMs) {
+    if (!stalled && activeToolCallIds.size === 0 && Date.now() - lastActivity > stallTimeoutMs) {
       stalled = true;
       transcript += `\n\n--- stall ---\nstalled for ${stallTimeoutMs}ms; aborting session\n`;
       onActivity?.({ message: `stalled for ${stallTimeoutMs}ms; aborting session`, output, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), interaction_request: latestInteractionRequest });

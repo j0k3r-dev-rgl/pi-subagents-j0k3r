@@ -103,9 +103,17 @@ function boundText(text: string | undefined, limit: number): string | undefined 
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+function boundUnknown(value: unknown, limit: number): unknown {
+  if (typeof value === 'string') return boundText(value, limit);
+  if (Array.isArray(value)) return value.slice(0, 50).map((entry) => boundUnknown(entry, limit));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, entry]) => [key, boundUnknown(entry, limit)]));
+}
+
 function boundPayload(payload: SubagentToolResultPayload, limit: number): SubagentToolResultPayload {
   return {
     ...payload,
+    details: boundUnknown(payload.details, limit),
     preview: boundText(payload.preview, limit),
     content: payload.content.map((part) => ({ ...part, text: boundText(part.text, limit), data: boundText(part.data, limit) })),
   };
@@ -126,7 +134,7 @@ function boundItem(item: SubagentThreadItem, limit: number): SubagentThreadItem 
         },
       };
     case 'user': return { ...item, text: boundText(item.text, limit) ?? '' };
-    case 'tool': return { ...item, result: item.result ? boundPayload(item.result, limit) : undefined };
+    case 'tool': return { ...item, arguments: boundUnknown(item.arguments, limit), result: item.result ? boundPayload(item.result, limit) : undefined };
     case 'tool_result': return { ...item, result: boundPayload(item.result, limit) };
     case 'bash': return { ...item, command: boundText(item.command, limit) ?? '', output: boundText(item.output, limit) };
     case 'custom': return { ...item, fallbackText: boundText(item.fallbackText, limit) };
@@ -182,6 +190,7 @@ export function resetPiComponentCacheForTests(): void {
   piComponents = undefined;
   builtInToolDefinitionCache.clear();
   runtimeToolDefinitionsByTask.clear();
+  toolComponentCacheByTask.clear();
 }
 
 function loadPiComponents(): Record<string, any> | undefined {
@@ -294,6 +303,7 @@ function renderUserItem(item: SubagentUserItem, context: SubagentThreadRenderCon
 
 const builtInToolDefinitionCache = new Map<string, unknown>();
 const runtimeToolDefinitionsByTask = new Map<string, Map<string, unknown>>();
+const toolComponentCacheByTask = new Map<string, Map<string, unknown>>();
 
 export function registerSubagentRuntimeToolDefinition(taskId: string | undefined, name: string | undefined, definition: unknown): void {
   if (!taskId || !name || !definition) return;
@@ -379,12 +389,33 @@ function toolArgumentSummary(name: string, args: unknown): string {
   return jsonPreview(args);
 }
 
+function isActiveToolStatus(status: SubagentToolItem['status']): boolean {
+  return status === 'pending' || status === 'running' || status === 'partial';
+}
+
+function cachedToolComponent(item: SubagentToolItem, context: SubagentThreadRenderContext, componentCtor: any, toolDefinition: unknown): any {
+  const cacheId = item.tool_call_id ?? item.id;
+  const shouldReuse = Boolean(context.taskId && cacheId && (isActiveToolStatus(item.status) || toolComponentCacheByTask.get(context.taskId!)?.has(cacheId!)));
+  if (!shouldReuse) return new componentCtor(item.name, cacheId ?? item.name, item.arguments, { showImages: context.showImages, imageWidthCells: context.imageWidthCells }, toolDefinition, context.tui, context.cwd);
+  let taskCache = toolComponentCacheByTask.get(context.taskId!);
+  if (!taskCache) {
+    taskCache = new Map<string, unknown>();
+    toolComponentCacheByTask.set(context.taskId!, taskCache);
+  }
+  let component = taskCache.get(cacheId!);
+  if (!component) {
+    component = new componentCtor(item.name, cacheId ?? item.name, item.arguments, { showImages: context.showImages, imageWidthCells: context.imageWidthCells }, toolDefinition, context.tui, context.cwd);
+    taskCache.set(cacheId!, component);
+  }
+  return component;
+}
+
 function renderToolItem(item: SubagentToolItem, context: SubagentThreadRenderContext, width: number): string[] {
   const toolDefinition = context.getToolDefinition?.(item.name) ?? runtimeToolDefinition(context.taskId, item.name) ?? builtInToolDefinition(item.name, context.cwd);
   const componentCtor = loadPiComponents()?.ToolExecutionComponent;
   if (typeof componentCtor === 'function' && context.tui && toolDefinition) {
     try {
-      const component = new componentCtor(item.name, item.tool_call_id ?? item.id ?? item.name, item.arguments, { showImages: context.showImages, imageWidthCells: context.imageWidthCells }, toolDefinition, context.tui, context.cwd);
+      const component = cachedToolComponent(item, context, componentCtor, toolDefinition);
       component.markExecutionStarted?.();
       component.setArgsComplete?.();
       if (item.result) component.updateResult?.(item.result, item.status === 'partial');
@@ -405,20 +436,24 @@ function renderToolItem(item: SubagentToolItem, context: SubagentThreadRenderCon
 }
 
 function renderBashItem(item: SubagentBashItem, context: SubagentThreadRenderContext, width: number): string[] {
-  const componentCtor = loadPiComponents()?.BashExecutionComponent;
-  if (typeof componentCtor === 'function' && context.tui) {
-    try {
-      const component = new componentCtor(item.command, context.tui, true);
-      if (item.output) component.appendOutput?.(item.output);
-      if (item.status !== 'running') component.setComplete?.(item.exitCode, item.cancelled ?? item.status === 'cancelled', item.truncated ? { truncated: true } : undefined, item.fullOutputPath);
-      component.setExpanded?.(context.toolOutputExpanded ?? false);
-      const rendered = renderComponent(component, width);
-      if (rendered?.some((line) => line.trim())) return rendered;
-    } catch (error) { debugLog(context, 'bash_component_error', { error, command: item.command.slice(0, 200), status: item.status, hasTui: Boolean(context.tui) }); }
-  }
   const status = item.cancelled ? 'cancelled' : item.status ?? (item.exitCode && item.exitCode !== 0 ? 'failed' : 'completed');
-  const exit = item.exitCode === undefined ? '' : ` exit:${item.exitCode}`;
-  return [`bash ${status}${exit}: ${item.command}`, item.output ?? ''].filter(Boolean);
+  const adapted: SubagentToolItem = {
+    type: 'tool',
+    id: item.id,
+    tool_call_id: item.tool_call_id,
+    name: 'bash',
+    arguments: { command: item.command },
+    status: status === 'cancelled' ? 'failed' : status === 'running' ? 'running' : status === 'failed' ? 'failed' : 'completed',
+    result: item.output || item.exitCode !== undefined || item.fullOutputPath || item.truncated
+      ? {
+          content: item.output ? [{ type: 'text', text: item.output }] : [],
+          details: { exitCode: item.exitCode, cancelled: item.cancelled, truncated: item.truncated, fullOutputPath: item.fullOutputPath, legacy_snapshot: true },
+          isError: status === 'failed' || status === 'cancelled',
+          preview: item.output,
+        }
+      : undefined,
+  };
+  return renderToolItem(adapted, context, width);
 }
 
 function renderCustomItem(item: SubagentCustomItem, context: SubagentThreadRenderContext, width: number): string[] {

@@ -1,5 +1,6 @@
 import { readSubagentsConfig } from '../config.js';
 import type { SubagentManager } from '../manager.js';
+import type { SubagentTask } from '../types.js';
 import { createSubagentsRenderLogger } from '../render-debug.js';
 import { truncateToWidth, visibleWidth } from '../render/text-width.js';
 import { SubagentsHistoryPanel } from './subagents-history-panel.js';
@@ -10,6 +11,19 @@ function currentSessionId(ctx: any): string | undefined {
   if (typeof direct === 'string' && direct.length > 0) return direct;
   const file = ctx?.sessionManager?.getSessionFile?.();
   return typeof file === 'string' && file.length > 0 ? file : undefined;
+}
+
+function contextWindowForTask(ctx: any, task: SubagentTask): number | undefined {
+  const label = task.model;
+  const current = ctx?.model;
+  const currentLabel = current?.provider && current?.id ? `${current.provider}/${current.id}` : undefined;
+  let model = !label || label === 'default/current' || label === currentLabel ? current : undefined;
+  if (!model && label) {
+    const separator = label.indexOf('/');
+    if (separator > 0) model = ctx?.modelRegistry?.find?.(label.slice(0, separator), label.slice(separator + 1));
+  }
+  const contextWindow = Number(model?.contextWindow);
+  return Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : undefined;
 }
 
 function setMouseTracking(tui: any, enabled: boolean): void {
@@ -93,6 +107,11 @@ export async function showSubagentsPanel(input: {
           selectedTaskId,
           (id: string) => manager.cancel(id, 'cancelled from subagents detail view'),
           config.detail_cancel_shortcut ?? 'x',
+          {
+            timeoutMs: config.timeout_ms,
+            stallTimeoutMs: config.stall_timeout_ms,
+            contextWindowForTask: (task: SubagentTask) => contextWindowForTask(ctx, task),
+          },
         );
         renderLogger.log({ event: 'panel_created' });
         renderLogger.log({ event: 'render_requested', reason: nextRenderReason });

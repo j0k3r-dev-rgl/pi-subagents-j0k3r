@@ -71,16 +71,19 @@ describe('subagent runner thread snapshots', () => {
     expect(result.thread_snapshot).toMatchObject({ version: 1, source: 'mixed' });
     expect(result.thread_snapshot?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'assistant', message: expect.objectContaining({ content: [expect.objectContaining({ type: 'text', text: 'final answer' })] }) }),
-      expect.objectContaining({ type: 'bash', tool_call_id: 'bash-1', command: 'printf hello', status: 'completed' }),
+      expect.objectContaining({ type: 'tool', tool_call_id: 'bash-1', name: 'bash', status: 'completed', arguments: { command: 'printf hello' } }),
       expect.objectContaining({ type: 'tool', tool_call_id: 'mem-1', name: 'memory_search', status: 'failed', result: expect.objectContaining({ isError: true, preview: expect.stringContaining('memory unavailable') }) }),
       expect.objectContaining({ type: 'tool', tool_call_id: 'custom-1', name: 'custom_tool', status: 'completed', result: expect.objectContaining({ preview: expect.stringContaining('custom result') }) }),
     ]));
-    const bashItem = result.thread_snapshot?.items.find((item: any) => item.type === 'bash') as any;
-    expect(bashItem.output.length).toBeLessThan(4500);
-    expect(bashItem.truncated).toBe(true);
+    const bashItem = result.thread_snapshot?.items.find((item: any) => item.type === 'tool' && item.name === 'bash') as any;
+    expect(bashItem.started_at).toEqual(expect.any(String));
+    expect(bashItem.ended_at).toEqual(expect.any(String));
+    expect(bashItem.arguments).toMatchObject({ command: 'printf hello' });
+    expect(bashItem.result.preview.length).toBeLessThan(4500);
+    expect(String(bashItem.result.preview)).toContain('x');
   });
 
-  it('fails stalled tool sessions instead of returning streamed tool-call json as the final result', async () => {
+  it('does not classify provider stall while a tool is still active, but still stalls after the tool ends', async () => {
     vi.useFakeTimers();
     vi.resetModules();
     let subscriber: ((event: unknown) => void) | undefined;
@@ -93,7 +96,6 @@ describe('subagent runner thread snapshots', () => {
       prompt: vi.fn(async () => {
         subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: '{"path":"openspec/changes/websearch-extension/spec.md"}' } });
         subscriber?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'openspec/changes/websearch-extension/spec.md' } });
-        subscriber?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: 'spec body' }] } });
         return new Promise<void>((resolve) => { resolvePrompt = resolve; });
       }),
       abort: vi.fn(async () => { resolvePrompt?.(); }),
@@ -123,11 +125,14 @@ describe('subagent runner thread snapshots', () => {
       await vi.dynamicImportSettled();
       expect(session.prompt).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(600);
+      expect(session.abort).not.toHaveBeenCalled();
+      subscriber?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: 'spec body' }] } });
+      await vi.advanceTimersByTimeAsync(600);
       const error = await rejection;
       expect(error).toBeInstanceOf(Error);
       expect(error.error_metadata).toMatchObject({
-        category: 'unknown_fallback',
-        attempts: [expect.objectContaining({ category: 'stall_timeout', phase: 'runner_session', role: 'primary' })],
+        category: 'stall_timeout',
+        phase: 'runner_session',
       });
       expect(session.abort).toHaveBeenCalledOnce();
     } finally {
@@ -182,7 +187,7 @@ describe('subagent runner thread snapshots', () => {
       expect(afterToolStart?.transcript).not.toContain('{"command"');
       expect(result.thread_snapshot?.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'tool', name: 'workspace_graph_status', arguments: {} }),
-        expect.objectContaining({ type: 'bash', command: 'ls -la', status: 'completed' }),
+        expect.objectContaining({ type: 'tool', name: 'bash', arguments: { command: 'ls -la', timeout: 10 }, status: 'completed' }),
       ]));
       const log = fs.readFileSync(path.join(cwd, '.pi', 'subagents-debug.log'), 'utf8');
       expect(log).toContain('"assistantEventType":"toolcall_delta"');
