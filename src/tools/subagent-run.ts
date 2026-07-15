@@ -9,7 +9,7 @@ import { installBackgroundHandoffShortcut } from './background-handoff-state.js'
 import { compactResultDetails, compactTaskForToolResult } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
-function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, onCancel: () => void): () => void {
+export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, onCancel: () => void): () => void {
   let lastEscapeAt = 0;
   const unsubscribe = ctx?.ui?.onTerminalInput?.((data: string) => {
     if (data !== '\u001b') return undefined;

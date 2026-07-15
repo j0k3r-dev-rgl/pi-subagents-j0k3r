@@ -882,6 +882,73 @@ describe('manager and history integration', () => {
     expect(store.getTask(tmp, task.id)?.result).toBe('stored globally');
   });
 
+  it('moves a continued stable task to the front of activity-ordered listings, including after history reload', async () => {
+    writeAgent('analyst');
+    const runner: SubagentRunner = async ({ taskId, task, continuation, nested_session_path, onActivity }) => {
+      const sessionPath = nested_session_path ?? path.join(tmp, `${taskId}.jsonl`);
+      if (!fs.existsSync(sessionPath)) fs.writeFileSync(sessionPath, '{"type":"session"}\n');
+      onActivity?.({ message: 'nested session ready', nested_session_path: sessionPath } as any);
+      return { result: continuation ? `continued ${task}` : `completed ${task}`, model: 'mock/model', fallback_used: false, nested_session_path: sessionPath } as any;
+    };
+    const manager = new SubagentManager(runner);
+    const session = { cwd: tmp, sessionId: 'session-activity-order' };
+    const taskIds: string[] = [];
+    for (const task of ['apply first', 'review second', 'verify third', 'discovery fourth']) {
+      const result = await manager.run({ agent: 'analyst', task, mode: 'task' }, session);
+      taskIds.push(result.task_ids[0]!);
+    }
+
+    expect(manager.listSessionTasks(tmp, session.sessionId).map((task) => task.id)).toEqual([...taskIds].reverse());
+
+    await manager.continueTask({ task_id: taskIds[0]!, prompt: 'Resume the first apply.' }, session);
+
+    expect(manager.listSessionTasks(tmp, session.sessionId).map((task) => task.id)).toEqual([taskIds[0], taskIds[3], taskIds[2], taskIds[1]]);
+    expect(manager.listTasks(tmp).map((task) => task.id)).toEqual([taskIds[0], taskIds[3], taskIds[2], taskIds[1]]);
+
+    const freshManager = new SubagentManager(runner);
+    expect(freshManager.listSessionTasks(tmp, session.sessionId).map((task) => task.id)).toEqual([taskIds[0], taskIds[3], taskIds[2], taskIds[1]]);
+    expect(freshManager.listTasks(tmp).map((task) => task.id)).toEqual([taskIds[0], taskIds[3], taskIds[2], taskIds[1]]);
+  });
+
+  it('uses the same binary id tie-break order in memory and after sqlite reload', () => {
+    const history = new SubagentHistoryStore();
+    const timestamp = '2026-07-15T12:00:00.000Z';
+    const hyphenTask: SubagentTask = {
+      id: 'subtask_a-b_same',
+      agent: 'a-b',
+      mode: 'task',
+      status: 'completed',
+      task: 'hyphen task',
+      created_at: timestamp,
+      last_activity_at: timestamp,
+      session_id: 'session-binary-tie',
+      result: 'hyphen result',
+    } as any;
+    const underscoreTask: SubagentTask = {
+      ...hyphenTask,
+      id: 'subtask_a_b_same',
+      agent: 'a_b',
+      task: 'underscore task',
+      result: 'underscore result',
+    };
+    history.upsertTask(tmp, hyphenTask);
+    history.upsertTask(tmp, underscoreTask);
+
+    const manager = new SubagentManager(mockRunner(), history);
+    for (const task of [hyphenTask, underscoreTask]) {
+      (manager as any).tasks.set(task.id, task);
+      (manager as any).taskCwds.set(task.id, tmp);
+    }
+    const expected = [underscoreTask.id, hyphenTask.id];
+
+    expect(manager.listTasks(tmp).map((task) => task.id)).toEqual(expected);
+    expect(manager.listSessionTasks(tmp, 'session-binary-tie').map((task) => task.id)).toEqual(expected);
+
+    const freshManager = new SubagentManager(mockRunner(), history);
+    expect(freshManager.listTasks(tmp).map((task) => task.id)).toEqual(expected);
+    expect(freshManager.listSessionTasks(tmp, 'session-binary-tie').map((task) => task.id)).toEqual(expected);
+  });
+
   it('retrieves completed tasks from sqlite history when not in memory', async () => {
     writeAgent('analyst');
     const manager = new SubagentManager(mockRunner());

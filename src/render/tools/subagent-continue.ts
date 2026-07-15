@@ -1,11 +1,10 @@
-import { textComponent } from './components.js';
-import { clip } from './formatting.js';
-import { renderSubagentRunResult } from './subagent-run.js';
+import type { SubagentTask } from '../types.js';
+import { renderSubagentRunResult, renderSubagentTaskCall } from './subagent-run.js';
 
-export function renderSubagentContinueCall(args: any, theme: any) {
-  const title = `${theme.fg?.('toolTitle', theme.bold?.('subagent continue') ?? 'subagent continue') ?? 'subagent continue'} ${theme.fg?.('dim', `(${args.task_id ?? 'unknown'})`) ?? `(${args.task_id ?? 'unknown'})`}`;
-  const prompt = clip(args.prompt, 120);
-  return textComponent(`${title}\n${theme.fg?.('dim', 'continuation prompt:') ?? 'continuation prompt:'} ${prompt}`);
+export function renderSubagentContinueCall(args: any, theme: any, task?: SubagentTask) {
+  const attempt = task ? (task.attempt ?? 1) + 1 : 'next';
+  const detail = `continue · attempt: ${attempt} · id: ${args.task_id ?? 'unknown'}`;
+  return renderSubagentTaskCall(task?.agent ?? 'continue', 'task', theme, detail);
 }
 
 export function renderSubagentContinueResult(result: any, options: any, theme: any) {

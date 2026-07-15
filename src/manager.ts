@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { loadSubagents, parseEffort, parseModel, readSubagentsConfig } from './config.js';
 import { writeSubagentsDebugLog } from './debug.js';
@@ -12,6 +13,13 @@ import type { EffectiveSubagentProfile, ModelRef, SubagentContinueInput, Subagen
 
 function nowIso(): string { return new Date().toISOString(); }
 function taskId(agent: string): string { return `subtask_${agent}_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`; }
+function taskActivityTime(task: SubagentTask): string { return task.last_activity_at ?? task.started_at ?? task.created_at; }
+function compareBinaryTextDesc(a: string, b: string): number { return Buffer.compare(Buffer.from(b, 'utf8'), Buffer.from(a, 'utf8')); }
+function compareTasksByRecentActivity(a: SubagentTask, b: SubagentTask): number {
+  return compareBinaryTextDesc(taskActivityTime(a), taskActivityTime(b))
+    || compareBinaryTextDesc(a.created_at, b.created_at)
+    || compareBinaryTextDesc(a.id, b.id);
+}
 function subagentAuditLog(cwd: string | undefined, event: string, data: Record<string, unknown>): void {
   writeSubagentsDebugLog(cwd, event, data);
 }
@@ -233,21 +241,21 @@ export class SubagentManager {
   }
 
   listTasks(cwd?: string) {
-    const active = [...this.tasks.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const active = [...this.tasks.values()].sort(compareTasksByRecentActivity);
     if (!cwd) return active;
     const activeIds = new Set(active.map((task) => task.id));
     const persisted = this.history.listTasks(cwd).filter((task) => !activeIds.has(task.id));
-    return [...active, ...persisted].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return [...active, ...persisted].sort(compareTasksByRecentActivity);
   }
 
   listSessionTasks(cwd?: string, sessionId?: string) {
     const active = [...this.tasks.values()]
       .filter((task) => (!cwd || this.taskCwds.get(task.id) === cwd) && (!sessionId || task.session_id === sessionId))
-      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      .sort(compareTasksByRecentActivity);
     if (!cwd || !sessionId) return active;
     const activeIds = new Set(active.map((task) => task.id));
     const persisted = this.cachedPersistedSessionTasks(cwd, sessionId).filter((task) => !activeIds.has(task.id));
-    return [...active, ...persisted].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return [...active, ...persisted].sort(compareTasksByRecentActivity);
   }
 
   getTask(id: string, cwd?: string) {

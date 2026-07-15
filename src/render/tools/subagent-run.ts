@@ -5,13 +5,16 @@ import { collapsedResultHint, formatUsage, taskFinalText } from './formatting.js
 import { progressText } from './progress.js';
 import { taskFromDetails } from '../result-details.js';
 
-export function renderSubagentRunCall(args: any, theme: any) {
-  const agents = args.agents?.length ? args.agents.join(', ') : args.agent ?? 'subagent';
-  const mode = args.mode ?? 'task';
+export function renderSubagentTaskCall(agent: string, mode: 'task' | 'background', theme: any, detail?: string) {
   const uiMode = readSubagentsConfig(process.cwd()).mode;
   const detailsHint = uiMode === 'claude' ? '(/subagents for details)' : '(ctrl+, or /subagents for details)';
-  const text = `${theme.fg?.('toolTitle', theme.bold?.('subagent ') ?? 'subagent ') ?? 'subagent '}${theme.fg?.('accent', agents) ?? agents}${theme.fg?.('dim', ` (${mode})`) ?? ` (${mode})`} ${theme.fg?.('dim', detailsHint) ?? detailsHint}`;
-  return textComponent(text);
+  const title = `${theme.fg?.('toolTitle', theme.bold?.('subagent ') ?? 'subagent ') ?? 'subagent '}${theme.fg?.('accent', agent) ?? agent}${theme.fg?.('dim', ` (${mode})`) ?? ` (${mode})`} ${theme.fg?.('dim', detailsHint) ?? detailsHint}`;
+  return textComponent(detail ? `${title}\n${theme.fg?.('dim', detail) ?? detail}` : title);
+}
+
+export function renderSubagentRunCall(args: any, theme: any) {
+  const agents = args.agents?.length ? args.agents.join(', ') : args.agent ?? 'subagent';
+  return renderSubagentTaskCall(agents, args.mode ?? 'task', theme);
 }
 
 export function renderSubagentRunResult(result: any, { expanded, isPartial }: any, theme: any) {

@@ -356,13 +356,17 @@ export class SubagentHistoryStore {
 
   listTasks(cwd: string, limit = 100, options: HistoryReadOptions = {}): SubagentTask[] {
     return this.db(cwd).prepare(`
-      SELECT * FROM subagent_tasks WHERE cwd = ? ORDER BY created_at DESC LIMIT ?
+      SELECT * FROM subagent_tasks WHERE cwd = ?
+      ORDER BY COALESCE(last_activity_at, started_at, created_at) DESC, created_at DESC, id DESC
+      LIMIT ?
     `).all(cwd, limit).map((row) => rowToTask(row, options));
   }
 
   listSessionTasks(cwd: string, sessionId: string, limit = 100, options: HistoryReadOptions = {}): SubagentTask[] {
     return this.db(cwd).prepare(`
-      SELECT * FROM subagent_tasks WHERE cwd = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?
+      SELECT * FROM subagent_tasks WHERE cwd = ? AND session_id = ?
+      ORDER BY COALESCE(last_activity_at, started_at, created_at) DESC, created_at DESC, id DESC
+      LIMIT ?
     `).all(cwd, sessionId, limit).map((row) => rowToTask(row, options));
   }
 

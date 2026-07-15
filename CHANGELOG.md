@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.1 - 2026-07-15
+
+### Fixed
+- Moved resumed tasks to the top of `/subagents`, background widgets, and task listings by sorting on recent activity instead of original creation time.
+- Kept recent-task ordering deterministic and consistent after SQLite history reloads, including equal-timestamp tie cases.
+- Matched `subagent_continue` call, live progress, and final rendering with task-mode `subagent_run`, including agent, attempt, model, effort, and current activity.
+- Restored live double-Escape cancellation and Claude-mode `ctrl+h` background handoff for continued tasks.
+
+## 1.4.0 - 2026-07-15
+
+### Added
+- Added `subagent_continue` so completed, failed, and cancelled tasks can resume under the same task ID and exact persisted Pi conversation.
+- Added per-attempt history, optional user-approved model and effort overrides, and migration-safe nested-session persistence.
+
+### Improved
+- Grouped delegated tasks, continuation prompts, thinking, tools, and responses chronologically by attempt in `/subagents`.
+- Added English resume guidance to failed and cancelled agent-facing responses while keeping completed responses unchanged.
+- Serialized timeout and cancellation cleanup before reopening sessions and hardened private nested-session storage.
+
+## 1.3.2 - 2026-07-15
+
+### Fixed
+- Separated provider inactivity stalls, native tool timeouts, and total task timeouts so long-running tools are no longer misclassified as stalled providers.
+- Suppressed provider stall detection while tools are active and preserved precise structured timeout and cancellation errors.
+- Rendered subagent bash execution through Pi's native tool component and exposed timeout, stall, cancel, and context-consumption details in `/subagents`.
+- Removed automatic model fallback so failures return the selected model's exact error to the orchestrator.
+
 ## 1.3.1 - 2026-07-13
 
 ### Fixed
