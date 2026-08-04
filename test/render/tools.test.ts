@@ -152,7 +152,11 @@ describe('tool render helpers', () => {
       const legacyTaskId = 'subtask_legacy_render_continue';
       const legacySessionPath = path.join(env.tmp, 'legacy-render-session.jsonl');
       fs.writeFileSync(legacySessionPath, '{"type":"session"}\n');
-      (manager as any).history.upsertTask(env.tmp, {
+      // Use process.cwd() (not env.tmp) so the stored cwd matches what
+      // continueTool.renderCall reads — on macOS env.tmp (/var/folders/...) and
+      // process.cwd() (/private/var/...) differ by the /var symlink, and the
+      // history store keys rows by the literal cwd string.
+      (manager as any).history.upsertTask(process.cwd(), {
         id: legacyTaskId,
         agent: 'analyst',
         mode: 'legacy',

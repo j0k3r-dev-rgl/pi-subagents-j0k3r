@@ -53,7 +53,9 @@ describe('real process cancellation settlement', () => {
       await waitFor(() => {
         if (!shellPid) return false;
         try {
-          const output = execFileSync('ps', ['-o', 'pid=', '--ppid', String(shellPid)], { encoding: 'utf8' }).trim();
+          // `pgrep -P <ppid>` is portable (macOS BSD + Linux); `ps --ppid` is GNU-only
+          // and silently fails on macOS, which surfaced as a waitFor timeout.
+          const output = execFileSync('pgrep', ['-P', String(shellPid)], { encoding: 'utf8' }).trim();
           const parsed = Number.parseInt(output.split(/\s+/)[0] ?? '', 10);
           if (!Number.isFinite(parsed)) return false;
           sleepPid = parsed;
