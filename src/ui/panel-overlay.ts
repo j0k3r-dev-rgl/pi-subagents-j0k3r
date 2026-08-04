@@ -54,13 +54,17 @@ export async function showSubagentsPanel(input: {
   pi: any;
   manager: SubagentManager;
   selectedTaskId?: string;
+  /** Override the (cwd, parent sessionId) scope the panel lists tasks for.
+   * Used by the sessions selector to view a session that belongs to a different
+   * parent session than the current one. */
+  scope?: { cwd?: string; sessionId?: string };
   setWidgetInputSuspended: (value: boolean) => void;
   setActivePanelCancelSelected: (fn: (() => void) | undefined) => void;
   setActivePanelRequestRender: (fn: (() => void) | undefined) => void;
 }) {
-  const { ctx, pi, manager, selectedTaskId, setWidgetInputSuspended, setActivePanelCancelSelected, setActivePanelRequestRender } = input;
-  const cwd = ctx?.cwd ?? process.cwd();
-  const sessionId = currentSessionId(ctx);
+  const { ctx, pi, manager, selectedTaskId, scope, setWidgetInputSuspended, setActivePanelCancelSelected, setActivePanelRequestRender } = input;
+  const cwd = scope?.cwd ?? ctx?.cwd ?? process.cwd();
+  const sessionId = scope?.sessionId ?? currentSessionId(ctx);
   let refresh: NodeJS.Timeout | undefined;
   setWidgetInputSuspended(true);
   try {

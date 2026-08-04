@@ -62,6 +62,7 @@ export type SubagentsConfig = {
   background_handoff_shortcut?: string;
   history_panel_shortcut?: string;
   detail_cancel_shortcut?: string;
+  sessions_resume_shortcut?: string;
   enable_continue?: boolean;
   debug?: boolean;
   render_debug?: SubagentsRenderDebugConfig;
@@ -81,6 +82,13 @@ export type SubagentContinueInput = {
   mode?: SubagentMode;
   model?: string;
   effort?: ThinkingEffort;
+  /** Bypass the enable_continue gate. Used by explicit user actions (e.g. the
+   * sessions selector's ctrl+h background run), not by the autonomous LLM tool. */
+  force?: boolean;
+  /** Project cwd where the task is located (to find it + its agent definition),
+   * when it differs from the launching session's cwd. The continuation is then
+   * recorded under the launching session's cwd so it shows up in its views. */
+  findCwd?: string;
 };
 
 export type UsageStats = {

@@ -7,3 +7,9 @@ dist/
 .pi/workspace-code-graph/
 openspec/
 .tmp/
+# Local Pi runtime state
+.atl/
+
+# Local tooling artifacts
+.claude/
+.codegraph/

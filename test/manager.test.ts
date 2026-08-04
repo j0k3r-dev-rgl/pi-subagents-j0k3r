@@ -348,6 +348,33 @@ describe('manager and history integration', () => {
     expect(manager.getTask(first.task_ids[0]!, tmp)).toMatchObject({ attempt: 1, status: 'completed', result: 'initial result' });
   });
 
+  it('continueTask with findCwd rebinds the continuation to the launching session cwd', async () => {
+    writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, default_mode: 'background' }));
+    const nestedSessionPath = path.join(tmp, 'rebind-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    const manager = new SubagentManager(async ({ continuation, onActivity }) => {
+      if (!continuation) onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      return { result: continuation ? 'continued' : 'initial', model: 'mock/model', fallback_used: false };
+    });
+    const initial = await manager.run({ agent: 'analyst', task: 'rebind me', mode: 'task' }, { cwd: tmp, sessionId: 'session-A' });
+    const taskId = initial.results![0]!.id;
+    expect(manager.getTask(taskId, tmp)?.status).toBe('completed');
+
+    // Continue from a DIFFERENT launching cwd/session, pointing findCwd at the original.
+    const launchCwd = path.join(tmp, 'launch-cwd');
+    fs.mkdirSync(launchCwd, { recursive: true });
+    const cont = await manager.continueTask(
+      { task_id: taskId, prompt: 'continue rebined', mode: 'background', findCwd: tmp },
+      { cwd: launchCwd, sessionId: 'session-B' },
+    );
+    expect(cont.mode).toBe('background');
+    // Rebind: the continuation is recorded under the launching cwd/session, so it is
+    // visible there even though the task originated in tmp/session-A.
+    const inLaunch = manager.listSessionTasks(launchCwd, 'session-B');
+    expect(inLaunch.some((t) => t.id === taskId)).toBe(true);
+  });
+
   it('resolves continuation mode from explicit override, previous effective mode, and config fallback', async () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, default_mode: 'background' }));
     writeAgent('analyst');

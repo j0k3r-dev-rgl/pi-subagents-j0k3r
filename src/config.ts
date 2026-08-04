@@ -10,6 +10,7 @@ const DEFAULT_STALL_TIMEOUT_MS = 4 * 60 * 1000;
 const DEFAULT_BACKGROUND_HANDOFF_SHORTCUT = 'ctrl+h';
 const DEFAULT_HISTORY_PANEL_SHORTCUT = 'ctrl+,';
 const DEFAULT_DETAIL_CANCEL_SHORTCUT = 'x';
+const DEFAULT_SESSIONS_RESUME_SHORTCUT = 'ctrl+.';
 const DEFAULT_RENDER_DEBUG_LOG_PATH = path.join(os.tmpdir(), 'pi-subagents-render.jsonl');
 const BLOCKED_SUBAGENT_TOOLS = new Set([
   'subagent_run',
@@ -157,7 +158,7 @@ function parseDefaultMode(value: unknown): SubagentMode {
 
 function parseCtrlShortcut(value: any, fallback: string): string {
   const shortcut = String(value ?? fallback).trim().toLowerCase();
-  return /^(?:ctrl\+(?:[a-z]|,)|ctrl\+shift\+[a-z])$/.test(shortcut) ? shortcut : fallback;
+  return /^(?:ctrl\+(?:[a-z]|[.,;/])|ctrl\+shift\+[a-z])$/.test(shortcut) ? shortcut : fallback;
 }
 
 function parseDetailShortcut(value: any): string {
@@ -250,6 +251,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
     history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
+    sessions_resume_shortcut: parseCtrlShortcut(raw.sessions_resume_shortcut ?? raw.sessionsResumeShortcut, DEFAULT_SESSIONS_RESUME_SHORTCUT),
     enable_continue: parseBoolean(raw.enable_continue ?? raw.enableContinue, false),
     debug: parseBoolean(raw.debug, false),
     render_debug: parseRenderDebugConfig(globalRaw, projectRaw),

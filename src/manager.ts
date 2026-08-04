@@ -340,6 +340,14 @@ export class SubagentManager {
     return this.tasks.get(id) ?? (cwd ? this.history.getTask(cwd, id) : undefined);
   }
 
+  /** Find the task that owns a nested session path (across all cwds); used by
+   * the sessions selector to open the history panel on a selected session. */
+  findTaskByNestedSessionPath(nestedSessionPath: string) {
+    const active = [...this.tasks.values()].find((task) => task.nested_session_path === nestedSessionPath);
+    if (active) return active;
+    try { return this.history.getTaskByNestedSessionPath(nestedSessionPath); } catch { return undefined; }
+  }
+
   reconcileOrphanedTasks(cwd: string): SubagentTask[] {
     const orphaned = this.history.listTasksByStatus(cwd, ['queued', 'running']);
     const interruptedAt = nowIso();
@@ -578,23 +586,24 @@ export class SubagentManager {
     onTaskUpdate?: (tasks: SubagentTask[]) => void,
   ): Promise<{ mode: 'task' | 'background'; task_ids: string[]; results?: SubagentTask[] }> {
     const cwd = ctx?.cwd ?? process.cwd();
-    const taskCwd = this.taskCwds.get(input.task_id) ?? cwd;
-    const existing = this.getTask(input.task_id, taskCwd);
+    const findCwd = this.taskCwds.get(input.task_id) ?? input.findCwd ?? cwd;
+    const recordCwd = cwd;
+    const existing = this.getTask(input.task_id, findCwd);
     if (!existing) throw new Error(`Subagent task not found: ${input.task_id}`);
-    if (!readSubagentsConfig(taskCwd).enable_continue) throw new Error('Subagent task is not available.');
+    if (!input.force && !readSubagentsConfig(findCwd).enable_continue) throw new Error('Subagent task is not available.');
     if (existing.status !== 'stopping' && !isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     await this.awaitRunnerCleanup(existing.id);
-    const latest = this.getTask(input.task_id, taskCwd) ?? existing;
+    const latest = this.getTask(input.task_id, findCwd) ?? existing;
     if (!isTerminalStatus(latest.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     if (!latest.nested_session_path || !fs.existsSync(latest.nested_session_path)) {
       throw new Error(`Subagent task ${input.task_id} is missing or unreadable nested session file: ${latest.nested_session_path ?? 'unknown'}`);
     }
 
-    const config = readSubagentsConfig(taskCwd);
-    const definitions = new Map(loadSubagents(taskCwd).map((definition) => [definition.name, definition]));
+    const config = readSubagentsConfig(findCwd);
+    const definitions = new Map(loadSubagents(findCwd).map((definition) => [definition.name, definition]));
     const definition = definitions.get(latest.agent.toLowerCase());
     if (!definition) throw new Error(`Subagent definition not found for continuation: ${latest.agent}`);
-    try { this.history.upsertTask(taskCwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
+    try { this.history.upsertTask(recordCwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
     const effectiveProfile = resolveContinuationProfile(definition, config, ctx, input);
     const effectiveMode = resolveContinuationEffectiveMode({ explicitMode: input.mode, previousTask: latest, config });
     const continuationPrompt = sanitizeInteractionTransportText(input.prompt);
@@ -632,7 +641,7 @@ export class SubagentManager {
       taskText: latest.task,
       context: latest.context,
       task,
-      ctx: { ...ctx, cwd: taskCwd },
+      ctx: { ...ctx, cwd: recordCwd },
       config,
       effectiveProfile,
       parentSessionId: continuationSessionId,
@@ -641,7 +650,7 @@ export class SubagentManager {
       continuationPrompt,
       parentSignal,
       onTaskUpdate: () => onTaskUpdate?.([this.tasks.get(task.id)!].filter(Boolean)),
-      limiter: this.limiter(taskCwd, config.max_concurrency),
+      limiter: this.limiter(recordCwd, config.max_concurrency),
     });
     if (effectiveMode === 'background') return { mode: effectiveMode, task_ids: [task.id] };
     await this.wait(task.id);

@@ -2,6 +2,7 @@ import { readSubagentsConfig, subagentSourceWarnings } from '../config.js';
 import { SubagentManager } from '../manager.js';
 import { runSubagentModelsCommand } from '../model-profiles-ui.js';
 import { renderSubagentCompletionMessage, sendSubagentCompletionMessage } from '../render/completion-message.js';
+import { runSubagentsSessionsCommand } from '../sessions/sessions-command.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from '../tools.js';
 import { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState } from '../ui/background-widget.js';
 import { showSubagentsPanel } from '../ui/panel-overlay.js';
@@ -118,9 +119,55 @@ export default function subagentsExtension(pi: any): void {
   const backgroundHandoffShortcut = readSubagentsConfig(process.cwd()).background_handoff_shortcut ?? 'ctrl+h';
   pi.registerShortcut?.(backgroundHandoffShortcut, {
     description: 'Send running subagent task to background',
-    handler: async () => {
-      triggerClaudeBackgroundHandoff();
+    handler: async (ctx: any) => {
+      const sent = triggerClaudeBackgroundHandoff();
+      if (!sent) {
+        ctx?.ui?.notify?.(
+          'No running task-mode subagent to send to background. ctrl+h works only while a subagent runs in task mode.',
+          'info',
+        );
+      }
     },
+  });
+
+  const viewSessionInPanel = async (ctx: any, session: { path: string; cwd: string }) => {
+    const task = manager.findTaskByNestedSessionPath(session.path);
+    await showSubagentsPanel({
+      ctx: { ...ctx, pi },
+      pi,
+      manager,
+      selectedTaskId: task?.id,
+      scope: { cwd: session.cwd ?? ctx?.cwd, sessionId: task?.session_id },
+      setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+      setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
+      setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
+    });
+  };
+
+  const resumeSession = async (ctx: any, session: { path: string; cwd: string }, prompt: string) => {
+    const task = manager.findTaskByNestedSessionPath(session.path);
+    if (!task) { ctx?.ui?.notify?.('No subagent task found for that session', 'warning'); return; }
+    if (!prompt || !prompt.trim()) { ctx?.ui?.notify?.('Empty prompt, session not resumed', 'info'); return; }
+    try {
+      const result = await manager.continueTask(
+        { task_id: task.id, prompt: prompt.trim(), mode: 'background', force: true },
+        ctx,
+      );
+      ctx?.ui?.notify?.(`Subagent resumed (${(result.task_ids ?? []).join(', ') || 'no tasks'})`, 'info');
+    } catch (err) {
+      ctx?.ui?.notify?.(`Failed to resume: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  };
+
+  const sessionsResumeShortcut = readSubagentsConfig(process.cwd()).sessions_resume_shortcut ?? 'ctrl+.';
+  pi.registerShortcut?.(sessionsResumeShortcut, {
+    description: 'Resume a subagent session in the interactive TUI',
+    handler: async (ctx: any) => runSubagentsSessionsCommand({ ctx, onViewSession: (s) => viewSessionInPanel(ctx, s), onBackgroundRunSession: (s, prompt) => resumeSession(ctx, s, prompt) }),
+  });
+
+  pi.registerCommand?.('subagents-sessions', {
+    description: 'Resume a subagent session in the interactive TUI',
+    handler: async (_args: string, ctx: any) => runSubagentsSessionsCommand({ ctx, onViewSession: (s) => viewSessionInPanel(ctx, s), onBackgroundRunSession: (s, prompt) => resumeSession(ctx, s, prompt) }),
   });
 
   pi.registerCommand?.('subagents', {

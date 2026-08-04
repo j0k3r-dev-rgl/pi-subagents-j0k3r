@@ -7,6 +7,26 @@ export function truncateToWidth(text: string, width: number): string {
   return chars.length > width ? chars.slice(0, Math.max(0, width - 1)).join('') + '…' : text;
 }
 
+/** Truncate a (possibly ANSI-styled) string to a VISIBLE column width,
+ * preserving escape sequences. Use this over `truncateToWidth` when the input
+ * contains ANSI styling (e.g. a fully-themed selector row). */
+export function truncateToVisibleWidth(text: string, width: number, ellipsis = '…'): string {
+  if (width <= 0) return '';
+  if (visibleWidth(text) <= width) return text;
+  const tokens = text.match(/\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]|[\s\S]/gu) ?? [];
+  const ellipsisWidth = visibleWidth(ellipsis);
+  const cap = Math.max(0, width - ellipsisWidth);
+  let out = '';
+  let used = 0;
+  for (const token of tokens) {
+    if (/^\u001b/.test(token)) { out += token; continue; }
+    if (used >= cap) break;
+    out += token;
+    used += 1;
+  }
+  return out + ellipsis;
+}
+
 export function wrapLineToWidth(line: string, width: number): string[] {
   const max = Math.max(1, width);
   if (!line) return [''];

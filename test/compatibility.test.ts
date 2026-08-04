@@ -61,7 +61,7 @@ describe('compatibility smoke', () => {
     ]);
     expect(events).toEqual(['session_start', 'session_shutdown']);
     expect(shortcuts).toEqual(expect.arrayContaining(['ctrl+,', 'ctrl+h']));
-    expect(commands).toEqual(['subagents', 'subagent-models']);
+    expect(commands).toEqual(['subagents-sessions', 'subagents', 'subagent-models']);
   });
 
   it('restores subagent_continue registration when continuation is explicitly enabled before extension initialization', async () => {

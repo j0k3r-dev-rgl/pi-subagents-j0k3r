@@ -448,6 +448,22 @@ export class SubagentHistoryStore {
       ORDER BY attempt ASC
     `).all(cwd, taskId).map((row) => rowToTask(row, options));
   }
+
+  /** Find the most recent task that owns a given nested session path, across all
+   * project cwds. Used by the sessions selector to open the history panel on the
+   * task matching a selected session file. */
+  getTaskByNestedSessionPath(nestedSessionPath: string, options: HistoryReadOptions = {}): SubagentTask | undefined {
+    const rows = this.db('').prepare(`
+      SELECT *, task_id AS id FROM subagent_task_attempts
+      WHERE nested_session_path = ?
+      ORDER BY COALESCE(started_at, created_at) DESC
+      LIMIT 1
+    `).all(nestedSessionPath);
+    if (!rows.length) return undefined;
+    // Map the attempt row directly (do not depend on subagent_tasks, which may
+    // not have a row for tasks that only recorded attempts, e.g. failed runs).
+    return rowToTask(rows[0], options);
+  }
 }
 
 function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {

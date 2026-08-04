@@ -1020,7 +1020,7 @@ describe('subagents panel and extension ui', () => {
         registerCommand: () => undefined,
         registerShortcut: (key: string) => shortcuts.push(key),
       });
-      expect(shortcuts).toEqual(['ctrl+p', 'ctrl+shift+q', 'ctrl+h']);
+      expect(shortcuts).toEqual(['ctrl+p', 'ctrl+shift+q', 'ctrl+h', 'ctrl+.']);
     } finally {
       process.chdir(previousCwd);
     }
@@ -1130,7 +1130,7 @@ describe('subagents panel and extension ui', () => {
         registerCommand: () => undefined,
         registerShortcut: (key: string) => shortcuts.push(key),
       });
-      expect(shortcuts).toEqual(['ctrl+,', 'ctrl+b']);
+      expect(shortcuts).toEqual(['ctrl+,', 'ctrl+b', 'ctrl+.']);
     } finally {
       process.chdir(previousCwd);
     }
