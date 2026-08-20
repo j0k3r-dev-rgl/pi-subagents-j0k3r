@@ -121,7 +121,7 @@ Supported frontmatter:
 |---|---|
 | `name` | Subagent name. Defaults to filename stem. Normalized to lowercase. |
 | `description` | Short description shown by `subagent_list_agents`. |
-| `tools` | Tool allowlist for the subagent. Accepts either a comma-separated inline list or a multiline YAML list, but never both in one definition. When omitted, the definition gets the built-in default tool list. Configured `default_tools` is used by the runner when a definition has an empty tool list. |
+| `tools` | Tool allowlist for the subagent. Accepts either a comma-separated inline list or a multiline YAML list, but never both in one definition. Entries support asterisk patterns such as `ahk_*`, which match available tool names at runtime. When omitted, the definition gets the built-in default tool list. Configured `default_tools` is used by the runner when a definition has an empty tool list. |
 | `model` | Optional model as `provider/model-id`. |
 | `effort`, `thinking_level`, `thinkingLevel` | Optional thinking effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `subagent_mode` | Optional default execution mode for this definition: `task` or `background`. |
@@ -146,6 +146,14 @@ tools:
 ```
 
 Both examples load the same allowlist: `read`, `write`, and `bash`. Comma splitting applies only to `tools`; scalar fields such as `description` can contain commas without becoming lists.
+
+Tool entries can use an asterisk wildcard. For example, this allows every available tool whose name starts with `ahk_`:
+
+```yaml
+tools: ahk_*
+```
+
+The same asterisk pattern works in `default_tools`. Patterns are expanded against the tools available in the parent Pi session when the subagent starts. Tools with names that start with `subagent_` remain blocked.
 
 Do not mix the formats or declare `tools` more than once:
 
@@ -256,7 +264,7 @@ The same JSON shape is valid globally or project-locally; place it only in the s
 | `history_panel_shortcut` | `ctrl+,` | Shortcut used to open the subagents history/detail panel. Accepts `ctrl+<letter>` or `ctrl+,` and also accepts camelCase `historyPanelShortcut`. |
 | `detail_cancel_shortcut` | `x` | Shortcut for the subagents history/detail panel to cancel only the currently selected queued/running subagent. `ctrl+...` values are also registered as a Pi shortcut scoped by the active panel, so they still work when the TUI captures control keys; single-letter values are handled by the panel input. Accepts `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter, and also accepts camelCase `detailCancelShortcut`. It is ignored when the panel is not active or the selected subagent is already finished. |
 | `background_handoff_shortcut` | `ctrl+h` | Shortcut used to send a running task-mode subagent to the background. Accepts `ctrl+<letter>` and also accepts camelCase `backgroundHandoffShortcut`. |
-| `default_tools` | see below | Fallback tool allowlist used by the runner when an agent definition has an empty tool list. Omitted frontmatter `tools` uses the built-in default list. |
+| `default_tools` | see below | Fallback tool allowlist used by the runner when an agent definition has an empty tool list. Supports the same asterisk patterns as frontmatter `tools`. Omitted frontmatter `tools` uses the built-in default list. |
 
 Default tools:
 

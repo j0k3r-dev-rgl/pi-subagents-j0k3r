@@ -12,7 +12,7 @@ import { createSubagentSendMessageTool } from './subagent-send-message.js';
 export function registerSubagentTools(pi: any, manager: SubagentManager, cwd = process.cwd()): void {
   pi.registerTool(createSubagentListAgentsTool(manager));
   pi.registerTool(createSubagentRunTool(manager, pi));
-  if (readSubagentsConfig(cwd).enable_continue) pi.registerTool(createSubagentContinueTool(manager));
+  if (readSubagentsConfig(cwd).enable_continue) pi.registerTool(createSubagentContinueTool(manager, pi));
   pi.registerTool(createSubagentStatusTool(manager));
   pi.registerTool(createSubagentResultTool(manager));
   pi.registerTool(createSubagentListTasksTool(manager));

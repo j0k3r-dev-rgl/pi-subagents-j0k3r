@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, completionMessage, createSubagentsPanelKeyMatcher, moveClaudeBackgroundWidgetSelection, renderClaudeBackgroundWidgetLines, resolveRegisteredToolDefinition, sendSubagentCompletionMessage } from '../index.js';
 import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile, subagentSourceWarnings } from '../src/config.js';
+import { expandToolPatterns, matchesToolPattern } from '../src/tool-patterns.js';
 import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
 import { SubagentStructuredError, deriveErrorString, normalizeErrorMetadata, parseErrorMetadata, safeErrorMetadataDetails, serializeErrorMetadata } from '../src/error-metadata.js';
@@ -100,6 +101,28 @@ describe('config and workflow loading', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'worker.md'), `---\nname: worker\ntools: read, write, bash\n---\n# Worker`);
 
     expect(loadSubagents(tmp).find((agent) => agent.name === 'worker')?.tools).toEqual(['read', 'write', 'bash']);
+  });
+
+  it('keeps asterisk patterns in frontmatter and default_tools until runtime tool names are available', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'worker.md'), `---\nname: worker\ntools: ahk_*\n---\n# Worker`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_tools: ['context7_*', 'read'] }));
+
+    expect(loadSubagents(tmp).find((agent) => agent.name === 'worker')?.tools).toEqual(['ahk_*']);
+    expect(readSubagentsConfig(tmp).default_tools).toEqual(['context7_*', 'read']);
+  });
+
+  it('expands asterisk patterns in order and blocks subagent tools', () => {
+    const available = ['read', 'ahk_lookup', 'ahk_write', 'context7_search', 'subagent_run'];
+
+    expect(expandToolPatterns(['ahk_*', 'read', 'context7_*', 'subagent_*'], available)).toEqual([
+      'ahk_lookup',
+      'ahk_write',
+      'read',
+      'context7_search',
+    ]);
+    expect(matchesToolPattern('context7_?earch', 'context7_?earch')).toBe(true);
+    expect(matchesToolPattern('context7_search', 'context7_?earch')).toBe(false);
+    expect(matchesToolPattern('memory_search', 'memory_[sr]*')).toBe(false);
   });
 
   it('parses Windows CRLF frontmatter', () => {

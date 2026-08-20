@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isSubagentToolName } from './tool-patterns.js';
 import type { ModelRef, SubagentDefinition, SubagentDefinitionScope, SubagentMode, SubagentModelProfile, SubagentModelProfiles, SubagentSessionResources, SubagentsConfig, ThinkingEffort } from './types.js';
 
 const DEFAULT_TOOLS = ['read', 'memory_context', 'memory_search', 'memory_recall', 'memory_get'];
@@ -22,7 +23,7 @@ const BLOCKED_SUBAGENT_TOOLS = new Set([
 ]);
 
 function sanitizeTools(tools: string[]): string[] {
-  return tools.map(String).filter((tool) => !BLOCKED_SUBAGENT_TOOLS.has(tool) && !tool.startsWith('subagent_'));
+  return tools.map(String).filter((tool) => !BLOCKED_SUBAGENT_TOOLS.has(tool) && !isSubagentToolName(tool));
 }
 
 function parseScalar(value: string): any {
