@@ -11,7 +11,7 @@ import { compactResultDetails, compactTaskForToolResult } from './result-details
 import { installDoubleEscapeCancel } from './subagent-run.js';
 import { ok, fail } from './tool-response.js';
 
-export function createSubagentContinueTool(manager: SubagentManager) {
+export function createSubagentContinueTool(manager: SubagentManager, pi?: any) {
   return {
     name: 'subagent_continue',
     label: 'Subagent Continue',
@@ -68,7 +68,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
         : () => {};
       try {
         emit();
-        const continuePromise = manager.continueTask(params, ctx, _signal, isBackground ? undefined : (tasks) => { latestTasks = tasks; emit(); });
+        const continuePromise = manager.continueTask(params, { ...ctx, ...(pi ? { pi } : {}) }, _signal, isBackground ? undefined : (tasks) => { latestTasks = tasks; emit(); });
         const result = backgroundPromise ? await Promise.race([continuePromise, backgroundPromise]) : await continuePromise;
         if (cancelledByDoubleEscape) throw new Error('Subagent continuation cancelled by double escape');
         if (!('results' in result)) {

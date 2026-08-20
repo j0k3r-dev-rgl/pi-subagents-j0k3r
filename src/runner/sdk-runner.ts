@@ -3,6 +3,7 @@ import path from 'node:path';
 import { resolveEffectiveSubagentProfile } from '../profile-resolver.js';
 import { SubagentStructuredError } from '../error-metadata.js';
 import { resolveSubagentsHistoryHome } from '../history.js';
+import { expandToolPatterns } from '../tool-patterns.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
 import { getInteractionSessionRegistry } from './interaction-session-registry.js';
 import { detectPiRuntimeSupport, loadPiSdkModule } from './pi-sdk-module.js';
@@ -21,6 +22,19 @@ function modelRefLabel(ref: ModelRef | undefined): string | undefined {
 function resolveModel(ctx: any, ref?: ModelRef): any | undefined {
   if (!ref) return undefined;
   return ctx?.modelRuntime?.getModel?.(ref.provider, ref.id) ?? ctx?.modelRegistry?.find?.(ref.provider, ref.id);
+}
+
+function availableToolNames(ctx: any): string[] | undefined {
+  for (const source of [ctx?.pi, ctx]) {
+    try {
+      const allTools = source?.getAllTools?.();
+      if (!Array.isArray(allTools)) continue;
+      return allTools
+        .map((tool: unknown) => typeof tool === 'string' ? tool : (tool as { name?: unknown })?.name)
+        .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
+    } catch {}
+  }
+  return undefined;
 }
 
 const SUBAGENT_ALLOWED_EXTENSION_EVENTS = new Set(['tool_call', 'tool_result', 'user_bash']);
@@ -212,7 +226,8 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
   const effort = profile.effort.value;
-  const tools = definition.tools?.length ? definition.tools : config.default_tools;
+  const configuredTools = definition.tools?.length ? definition.tools : config.default_tools;
+  const tools = expandToolPatterns(configuredTools, availableToolNames(ctx));
   const systemPrompt = definition.instructions;
   const prompt = continuation?.prompt ?? buildPrompt(definition, task, context, tools);
   onActivity?.({
