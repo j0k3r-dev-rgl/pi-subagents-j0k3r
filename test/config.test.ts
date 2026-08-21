@@ -123,6 +123,15 @@ describe('config and workflow loading', () => {
     expect(config.stall_timeout_ms).toBe(10);
   });
 
+  it('parses model ids that contain slashes by splitting on the first separator', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'analyst.md'), `---\nname: analyst\ndescription: analyst agent\nmodel: openrouter/stealth/ox-alpha\n---\n# Agent`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_model: 'openrouter/meta-llama/llama-4-scout' }));
+    const agents = loadSubagents(tmp);
+    const config = readSubagentsConfig(tmp);
+    expect(agents[0].model).toEqual({ provider: 'openrouter', id: 'stealth/ox-alpha' });
+    expect(config.default_model).toEqual({ provider: 'openrouter', id: 'meta-llama/llama-4-scout' });
+  });
+
   it('loads default_mode through the global/project config cascade and falls back to task for invalid values', () => {
     const agentDir = path.join(tmp, 'global-agent');
     fs.mkdirSync(agentDir, { recursive: true });

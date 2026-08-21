@@ -124,9 +124,10 @@ function positiveInteger(value: any, fallback: number): number {
 export function parseModel(value: any): ModelRef | undefined {
   if (!value || value === 'default') return undefined;
   if (typeof value === 'string') {
-    const parts = value.split('/');
-    if (parts.length !== 2) return undefined;
-    const [provider, id] = parts.map((part) => part.trim());
+    const separator = value.indexOf('/');
+    if (separator === -1) return undefined;
+    const provider = value.slice(0, separator).trim();
+    const id = value.slice(separator + 1).trim();
     return provider && id ? { provider, id } : undefined;
   }
   if (isPlainObject(value) && typeof value.provider === 'string' && typeof value.id === 'string') {
