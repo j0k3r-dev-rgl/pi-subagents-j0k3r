@@ -22,9 +22,12 @@ type SubagentManagerActivitySource = {
   listLiveTasks(cwd: string, sessionId: string): readonly SubagentTask[];
   subscribeTaskUpdates(listener: (task: SubagentTask) => void): () => void;
 };
-type Registration = { provider: SubagentActivityProvider; dispose: () => void };
+type ProviderWatcher = (provider: SubagentActivityProvider | undefined) => void;
+type Registration = { provider: SubagentActivityProvider; dispose: (notify?: boolean) => void };
+type Discovery = { provider?: SubagentActivityProvider; listeners: Set<ProviderWatcher>; notifying: boolean };
 type PiHost = Record<PropertyKey, unknown>;
 const REGISTRATION_KEY = Symbol.for('pi-subagents-j0k3r.activity-provider.v1');
+const DISCOVERY_KEY = Symbol.for('pi-subagents-j0k3r.activity-provider-discovery.v1');
 const STATUSES = new Set<SubagentActivityStatus>(['queued', 'running', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted']);
 const MODES = new Set<SubagentActivityMode>(['task', 'background']);
 const KINDS = new Set<SubagentActivityKind>(['thinking', 'streaming_response', 'tool_running', 'tool_completed', 'tool_failed']);
@@ -84,12 +87,41 @@ function createProvider(manager: SubagentManagerActivitySource, scope: SubagentA
   return { provider, dispose: () => { if (active) { active = false; listeners.clear(); unsubscribeManager(); } } };
 }
 
-export function disposeSubagentActivityProvider(pi: unknown): void { (hostFor(pi)?.[REGISTRATION_KEY] as Registration | undefined)?.dispose(); }
+function discoveryFor(host: PiHost): Discovery {
+  const existing = host[DISCOVERY_KEY] as Discovery | undefined; if (existing) return existing;
+  const registration = host[REGISTRATION_KEY] as Registration | undefined;
+  const discovery = { provider: registration?.provider, listeners: new Set<ProviderWatcher>(), notifying: false };
+  Object.defineProperty(host, DISCOVERY_KEY, { configurable: true, enumerable: false, value: discovery, writable: true }); return discovery;
+}
+function notifyDiscovery(host: PiHost, provider: SubagentActivityProvider | undefined): void {
+  const discovery = host[DISCOVERY_KEY] as Discovery | undefined; if (!discovery || discovery.provider === provider) return;
+  discovery.provider = provider; if (discovery.notifying) return; discovery.notifying = true;
+  try {
+    while (true) {
+      const current = discovery.provider; let changed = false;
+      for (const listener of [...discovery.listeners]) {
+        if (!discovery.listeners.has(listener)) continue;
+        if (discovery.provider !== current) { changed = true; break; }
+        try { listener(current); } catch { /* discovery observers must not break registration */ }
+        if (discovery.provider !== current) { changed = true; break; }
+      }
+      if (!changed && discovery.provider === current) break;
+    }
+  } finally { discovery.notifying = false; }
+}
+function disposeRegistration(host: PiHost, notify: boolean): void { (host[REGISTRATION_KEY] as Registration | undefined)?.dispose(notify); }
+
+export function disposeSubagentActivityProvider(pi: unknown): void { const host = hostFor(pi); if (host) disposeRegistration(host, true); }
 export function registerSubagentActivityProvider(pi: unknown, manager: SubagentManagerActivitySource, scope: SubagentActivityScope): (() => void) | undefined {
-  const host = hostFor(pi); if (!host) return undefined; disposeSubagentActivityProvider(host);
-  if (!scope || typeof scope.cwd !== 'string' || !scope.cwd || typeof scope.sessionId !== 'string' || !scope.sessionId || typeof manager?.listLiveTasks !== 'function' || typeof manager?.subscribeTaskUpdates !== 'function') return undefined;
+  const host = hostFor(pi); if (!host) return undefined; disposeRegistration(host, false);
+  if (!scope || typeof scope.cwd !== 'string' || !scope.cwd || typeof scope.sessionId !== 'string' || !scope.sessionId || typeof manager?.listLiveTasks !== 'function' || typeof manager?.subscribeTaskUpdates !== 'function') { notifyDiscovery(host, undefined); return undefined; }
   const created = createProvider(manager, scope); let registration: Registration;
-  const dispose = () => { created.dispose(); if (host[REGISTRATION_KEY] === registration) delete host[REGISTRATION_KEY]; };
-  registration = { provider: created.provider, dispose }; Object.defineProperty(host, REGISTRATION_KEY, { configurable: true, enumerable: false, value: registration, writable: true }); return dispose;
+  const dispose = (notify = true) => { created.dispose(); if (host[REGISTRATION_KEY] === registration) { delete host[REGISTRATION_KEY]; if (notify) notifyDiscovery(host, undefined); } };
+  registration = { provider: created.provider, dispose }; Object.defineProperty(host, REGISTRATION_KEY, { configurable: true, enumerable: false, value: registration, writable: true }); notifyDiscovery(host, created.provider); return dispose;
 }
 export function getSubagentActivityProvider(pi: unknown): SubagentActivityProvider | undefined { return (hostFor(pi)?.[REGISTRATION_KEY] as Registration | undefined)?.provider; }
+export function watchSubagentActivityProvider(pi: unknown, listener: ProviderWatcher): (() => void) | undefined {
+  const host = hostFor(pi); if (!host || typeof listener !== 'function') return undefined; const discovery = discoveryFor(host); let subscribed = true; discovery.listeners.add(listener);
+  try { listener(discovery.provider); } catch { /* discovery observers must not break subscription */ }
+  return () => { if (!subscribed) return; subscribed = false; discovery.listeners.delete(listener); if (!discovery.listeners.size && host[DISCOVERY_KEY] === discovery) delete host[DISCOVERY_KEY]; };
+}

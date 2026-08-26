@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import extension, { getSubagentActivityProvider } from '../index.js';
+import extension, { getSubagentActivityProvider, watchSubagentActivityProvider } from '../index.js';
 import { registerSubagentActivityProvider } from '../src/activity-provider.js';
 import { installSubagentTestEnv } from './helpers/subagent-test-helpers.js';
 import type { SubagentRunner } from '../src/types.js';
@@ -128,7 +128,25 @@ describe('public subagent activity provider', () => {
     handlers.get('session_shutdown')?.(); expect(getSubagentActivityProvider(pi)).toBeUndefined();
   });
 
-  it('forwards real manager lifecycle events through the public seam', async () => {
+  it('discovers a provider registered after a root consumer subscribes without stale replacement events', () => {
+  const { pi } = makePi(); const received: Array<ActivityProvider | undefined> = []; const manager = { listLiveTasks: () => [], subscribeTaskUpdates: () => () => undefined };
+  const unsubscribe = watchSubagentActivityProvider(pi, (provider) => received.push(provider)); expect(received).toEqual([undefined]);
+  const disposeFirst = (registerSubagentActivityProvider as any)(pi, manager, { cwd: 'cwd-a', sessionId: 'session-a' }); const first = getSubagentActivityProvider(pi)!; expect(received).toEqual([undefined, first]);
+  const disposeSecond = (registerSubagentActivityProvider as any)(pi, manager, { cwd: 'cwd-b', sessionId: 'session-b' }); const second = getSubagentActivityProvider(pi)!; expect(received).toEqual([undefined, first, second]);
+  disposeFirst?.(); expect(received).toEqual([undefined, first, second]); disposeSecond?.(); expect(received).toEqual([undefined, first, second, undefined]); disposeSecond?.(); unsubscribe?.(); unsubscribe?.();
+  (registerSubagentActivityProvider as any)(pi, manager, { cwd: 'cwd-c', sessionId: 'session-c' }); expect(received).toEqual([undefined, first, second, undefined]);
+ });
+
+ it('isolates discovery listener failures and cleans up Gentle-first reload and shutdown discovery', () => {
+  const { pi, handlers } = makePi(); const received: Array<ActivityProvider | undefined> = []; const throwing = vi.fn(() => { throw new Error('observer failure'); });
+  const stopThrowing = watchSubagentActivityProvider(pi, throwing); const stop = watchSubagentActivityProvider(pi, (provider) => received.push(provider)); expect(received).toEqual([undefined]);
+  extension(pi); handlers.get('session_start')?.({}, { cwd: 'cwd-a', sessionId: 'session-a', ui: {} }); const first = getSubagentActivityProvider(pi)!; const firstManager = instances.at(-1)!;
+  expect(received).toEqual([undefined, first]); extension(pi); expect(getSubagentActivityProvider(pi)).toBeUndefined(); expect(firstManager.listeners.size).toBe(0); expect(received.at(-1)).toBeUndefined();
+  handlers.get('session_start')?.({}, { cwd: 'cwd-b', sessionId: 'session-b', ui: {} }); const second = getSubagentActivityProvider(pi)!; expect(received.at(-1)).toBe(second); handlers.get('session_shutdown')?.();
+  expect(getSubagentActivityProvider(pi)).toBeUndefined(); expect(received.at(-1)).toBeUndefined(); expect(throwing).toHaveBeenCalled(); stop?.(); stop?.(); stopThrowing?.();
+ });
+
+ it('forwards real manager lifecycle events through the public seam', async () => {
     const { SubagentManager: RealManager } = await vi.importActual<typeof import('../src/manager.js')>('../src/manager.js');
     for (const name of ['completed', 'failed', 'cancelled', 'interrupted']) env.writeAgent(name);
     const runner: SubagentRunner = async ({ definition, onActivity, signal }) => {

@@ -64,18 +64,21 @@ The npm metadata includes the `pi-package` keyword required for Pi package galle
 
 ## Live activity API
 
-After a session starts, another extension can discover the live, read-only provider from the same Pi API object:
+Another extension can watch the live, read-only provider on the same Pi API object, including when it registers after the consumer:
 
 ```ts
-import { getSubagentActivityProvider } from 'pi-subagents-j0k3r';
+import { watchSubagentActivityProvider } from 'pi-subagents-j0k3r';
 
-const provider = getSubagentActivityProvider(pi);
-const unsubscribe = provider?.subscribe((snapshot) => {
-  // snapshot.tasks contains safe identity, lifecycle, profile, usage, and activity data.
+let unsubscribeActivity = () => {};
+const unsubscribeDiscovery = watchSubagentActivityProvider(pi, (provider) => {
+  unsubscribeActivity();
+  unsubscribeActivity = provider?.subscribe((snapshot) => {
+    // snapshot.tasks contains safe identity, lifecycle, profile, usage, and activity data.
+  }) ?? (() => {});
 });
 ```
 
-The provider is versioned (`version: 1`), sends a complete immutable snapshot synchronously on subscription, and reports ordered process-local revisions. It is backed by the extension's current `SubagentManager`; it does not replay SQLite history or expose controls, prompts, arguments, paths, output, transcripts, or errors. Reloading the extension replaces the registration and cleans up the previous provider's manager listener.
+The watcher calls back synchronously with the current provider (or `undefined`), then on registration, replacement, and disposal. The provider is versioned (`version: 1`), sends a complete immutable snapshot synchronously on subscription, and reports ordered process-local revisions. It is backed by the extension's current `SubagentManager`; it does not replay SQLite history or expose controls, prompts, arguments, paths, output, transcripts, or errors. Reloading the extension replaces the registration and cleans up the previous provider's manager listener.
 
 Use `/reload` after changing extension code, skill files, config, or markdown subagent definitions during an interactive session.
 
