@@ -64,7 +64,7 @@ The npm metadata includes the `pi-package` keyword required for Pi package galle
 
 ## Live activity API
 
-Another extension can watch the live, read-only provider on the same Pi API object, including when it registers after the consumer:
+Another extension can watch the live, read-only provider. Same-module consumers may use the root APIs directly; distinct ExtensionAPI proxies use Pi's shared `pi.events` bus:
 
 ```ts
 import { watchSubagentActivityProvider } from 'pi-subagents-j0k3r';
@@ -78,7 +78,7 @@ const unsubscribeDiscovery = watchSubagentActivityProvider(pi, (provider) => {
 });
 ```
 
-The watcher calls back synchronously with the current provider (or `undefined`), then on registration, replacement, and disposal. The provider is versioned (`version: 1`), sends a complete immutable snapshot synchronously on subscription, and reports ordered process-local revisions. It is backed by the extension's current `SubagentManager`; it does not replay SQLite history or expose controls, prompts, arguments, paths, output, transcripts, or errors. Reloading the extension replaces the registration and cleans up the previous provider's manager listener.
+The watcher first reports the current provider (or `undefined`), then reports registration, replacement, disposal, and shutdown. The exported `SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL` and `SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL` are versioned (`v1`): consumers emit a request; the provider replies or publishes only a provider object (or `undefined`). Load order is safe—consumer-first receives later registration, provider-first receives a request response—and unsubscribe/reload removes listeners without duplicate delivery. Provider snapshots are versioned (`version: 1`), complete, immutable, and process-local; task data stays inside snapshots, which expose safe identity, lifecycle, profile, usage, and activity only—not controls, prompts, arguments, paths, output, transcripts, or errors. Reloading cleans the previous manager watcher.
 
 Use `/reload` after changing extension code, skill files, config, or markdown subagent definitions during an interactive session.
 

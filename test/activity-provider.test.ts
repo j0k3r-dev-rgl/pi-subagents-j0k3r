@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import extension, { getSubagentActivityProvider, watchSubagentActivityProvider } from '../index.js';
+import extension, { getSubagentActivityProvider, SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL, SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL, watchSubagentActivityProvider } from '../index.js';
 import { registerSubagentActivityProvider } from '../src/activity-provider.js';
 import { installSubagentTestEnv } from './helpers/subagent-test-helpers.js';
 import type { SubagentRunner } from '../src/types.js';
@@ -40,9 +40,17 @@ function task(id: string, status = 'queued') {
     live_activity: { trail: [], current: { kind: 'tool_running', label: 'LABEL_CANARY /SECRET_PATH_CANARY ARG_CANARY OUTPUT_CANARY', tool_names: ['read', 'bash'] } },
   };
 }
-function makePi() {
+function makeEventBus() {
+  const listeners = new Map<string, Set<Function>>(); const emissions: Array<[string, unknown]> = [];
+  const bus = {
+    on: vi.fn((channel: string, handler: Function) => { const handlers = listeners.get(channel) ?? new Set<Function>(); handlers.add(handler); listeners.set(channel, handlers); return () => handlers.delete(handler); }),
+    emit: vi.fn((channel: string, data: unknown) => { emissions.push([channel, data]); for (const handler of [...(listeners.get(channel) ?? [])]) handler(data); }),
+  };
+  return { bus, listeners, emissions };
+}
+function makePi(events?: any) {
   const handlers = new Map<string, Function>();
-  const pi = { registerMessageRenderer: vi.fn(), registerShortcut: vi.fn(), registerCommand: vi.fn(), registerTool: vi.fn(), on: vi.fn((event: string, handler: Function) => handlers.set(event, handler)) };
+  const pi = { registerMessageRenderer: vi.fn(), registerShortcut: vi.fn(), registerCommand: vi.fn(), registerTool: vi.fn(), on: vi.fn((event: string, handler: Function) => handlers.set(event, handler)), ...(events ? { events } : {}) };
   return { pi, handlers };
 }
 function start(initialTasks: any[] = []): { provider: ActivityProvider; manager: any; pi: any } {
@@ -145,6 +153,24 @@ describe('public subagent activity provider', () => {
   handlers.get('session_start')?.({}, { cwd: 'cwd-b', sessionId: 'session-b', ui: {} }); const second = getSubagentActivityProvider(pi)!; expect(received.at(-1)).toBe(second); handlers.get('session_shutdown')?.();
   expect(getSubagentActivityProvider(pi)).toBeUndefined(); expect(received.at(-1)).toBeUndefined(); expect(throwing).toHaveBeenCalled(); stop?.(); stop?.(); stopThrowing?.();
  });
+
+ it('discovers across distinct API proxies when the consumer loads first, then replaces, disposes, reloads, and shuts down', () => {
+    const { bus, listeners, emissions } = makeEventBus(); const consumer = makePi(bus); const providerApi = makePi(bus); const seen: Array<ActivityProvider | undefined> = [];
+    const stop = watchSubagentActivityProvider(consumer.pi, (provider) => seen.push(provider)); expect(seen).toEqual([undefined]); expect(emissions).toEqual([[SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL, undefined]]);
+    extension(providerApi.pi); providerApi.handlers.get('session_start')?.({}, { cwd: 'cwd-a', sessionId: 'session-a', ui: {} }); const first = getSubagentActivityProvider(providerApi.pi)!;
+    expect(seen).toEqual([undefined, first]); expect(emissions.filter(([channel]) => channel === SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL)).toHaveLength(1);
+    providerApi.handlers.get('session_start')?.({}, { cwd: 'cwd-b', sessionId: 'session-b', ui: {} }); const second = getSubagentActivityProvider(providerApi.pi)!;
+    expect(second).not.toBe(first); expect(seen).toEqual([undefined, first, second]); providerApi.handlers.get('session_shutdown')?.(); expect(seen.at(-1)).toBeUndefined();
+    stop?.(); const beforeReload = seen.length; extension(providerApi.pi); expect(seen).toHaveLength(beforeReload); expect(listeners.get(SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL)?.size).toBe(1);
+  });
+
+  it('discovers a provider loaded first through a request without duplicate consumer emissions', () => {
+    const { bus, emissions } = makeEventBus(); const providerApi = makePi(bus); const consumer = makePi(bus); extension(providerApi.pi);
+    providerApi.handlers.get('session_start')?.({}, { cwd: 'cwd-a', sessionId: 'session-a', ui: {} }); const provider = getSubagentActivityProvider(providerApi.pi)!; const seen: Array<ActivityProvider | undefined> = [];
+    const stop = watchSubagentActivityProvider(consumer.pi, (current) => seen.push(current)); expect(seen).toEqual([undefined, provider]);
+    expect(emissions.filter(([channel]) => channel === SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL)).toHaveLength(1); expect(seen.filter((current) => current === provider)).toHaveLength(1);
+    stop?.(); providerApi.handlers.get('session_shutdown')?.(); expect(seen).toEqual([undefined, provider]);
+  });
 
  it('forwards real manager lifecycle events through the public seam', async () => {
     const { SubagentManager: RealManager } = await vi.importActual<typeof import('../src/manager.js')>('../src/manager.js');

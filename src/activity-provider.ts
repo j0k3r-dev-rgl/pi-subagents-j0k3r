@@ -1,6 +1,8 @@
 import type { SubagentTask } from './types.js';
 
 export const SUBAGENT_ACTIVITY_PROVIDER_VERSION = 1 as const;
+export const SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL = 'pi-subagents-j0k3r:activity-provider-request:v1' as const;
+export const SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL = 'pi-subagents-j0k3r:activity-provider-changed:v1' as const;
 export type SubagentActivityStatus = 'queued' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type SubagentActivityMode = 'task' | 'background';
 export type SubagentActivityKind = 'thinking' | 'streaming_response' | 'tool_running' | 'tool_completed' | 'tool_failed';
@@ -25,9 +27,11 @@ type SubagentManagerActivitySource = {
 type ProviderWatcher = (provider: SubagentActivityProvider | undefined) => void;
 type Registration = { provider: SubagentActivityProvider; dispose: (notify?: boolean) => void };
 type Discovery = { provider?: SubagentActivityProvider; listeners: Set<ProviderWatcher>; notifying: boolean };
+type EventBus = { on(channel: string, handler: (data: unknown) => void): () => void; emit(channel: string, data: unknown): void };
 type PiHost = Record<PropertyKey, unknown>;
 const REGISTRATION_KEY = Symbol.for('pi-subagents-j0k3r.activity-provider.v1');
 const DISCOVERY_KEY = Symbol.for('pi-subagents-j0k3r.activity-provider-discovery.v1');
+const PROVIDER_EVENT_UNSUBSCRIBERS = new WeakMap<EventBus, () => void>();
 const STATUSES = new Set<SubagentActivityStatus>(['queued', 'running', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted']);
 const MODES = new Set<SubagentActivityMode>(['task', 'background']);
 const KINDS = new Set<SubagentActivityKind>(['thinking', 'streaming_response', 'tool_running', 'tool_completed', 'tool_failed']);
@@ -37,6 +41,13 @@ const TERMINAL = new Set<SubagentActivityStatus>(['completed', 'failed', 'cancel
 const USAGE_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'cost', 'contextTokens', 'turns'] as const;
 
 function hostFor(pi: unknown): PiHost | undefined { return pi && (typeof pi === 'object' || typeof pi === 'function') ? pi as PiHost : undefined; }
+function eventBusFor(host: PiHost): EventBus | undefined { const events = host.events as EventBus | undefined; return events && typeof events.on === 'function' && typeof events.emit === 'function' ? events : undefined; }
+function publishProvider(host: PiHost, provider: SubagentActivityProvider | undefined): void { eventBusFor(host)?.emit(SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL, provider); }
+export function installSubagentActivityProviderTransport(pi: unknown): void {
+  const host = hostFor(pi); const events = host && eventBusFor(host); if (!host || !events) return;
+  PROVIDER_EVENT_UNSUBSCRIBERS.get(events)?.();
+  PROVIDER_EVENT_UNSUBSCRIBERS.set(events, events.on(SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL, () => events.emit(SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL, getSubagentActivityProvider(host))));
+}
 function safeText(value: unknown, limit: number): string | undefined { return typeof value === 'string' && value.length > 0 && value.length <= limit && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined; }
 function safeToken(value: unknown, limit: number): string | undefined { const text = safeText(value, limit); return text && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(text) ? text : undefined; }
 function safeTimestamp(value: unknown): string | undefined { const text = safeText(value, 64); return text && Number.isFinite(Date.parse(text)) ? text : undefined; }
@@ -112,16 +123,17 @@ function notifyDiscovery(host: PiHost, provider: SubagentActivityProvider | unde
 function disposeRegistration(host: PiHost, notify: boolean): void { (host[REGISTRATION_KEY] as Registration | undefined)?.dispose(notify); }
 
 export function disposeSubagentActivityProvider(pi: unknown): void { const host = hostFor(pi); if (host) disposeRegistration(host, true); }
-export function registerSubagentActivityProvider(pi: unknown, manager: SubagentManagerActivitySource, scope: SubagentActivityScope): (() => void) | undefined {
-  const host = hostFor(pi); if (!host) return undefined; disposeRegistration(host, false);
-  if (!scope || typeof scope.cwd !== 'string' || !scope.cwd || typeof scope.sessionId !== 'string' || !scope.sessionId || typeof manager?.listLiveTasks !== 'function' || typeof manager?.subscribeTaskUpdates !== 'function') { notifyDiscovery(host, undefined); return undefined; }
+export function registerSubagentActivityProvider(pi: unknown, manager: SubagentManagerActivitySource, scope: SubagentActivityScope): ((notify?: boolean) => void) | undefined {
+  const host = hostFor(pi); if (!host) return undefined; const hadProvider = Boolean(host[REGISTRATION_KEY]); disposeRegistration(host, false);
+  if (!scope || typeof scope.cwd !== 'string' || !scope.cwd || typeof scope.sessionId !== 'string' || !scope.sessionId || typeof manager?.listLiveTasks !== 'function' || typeof manager?.subscribeTaskUpdates !== 'function') { notifyDiscovery(host, undefined); if (hadProvider) publishProvider(host, undefined); return undefined; }
   const created = createProvider(manager, scope); let registration: Registration;
-  const dispose = (notify = true) => { created.dispose(); if (host[REGISTRATION_KEY] === registration) { delete host[REGISTRATION_KEY]; if (notify) notifyDiscovery(host, undefined); } };
-  registration = { provider: created.provider, dispose }; Object.defineProperty(host, REGISTRATION_KEY, { configurable: true, enumerable: false, value: registration, writable: true }); notifyDiscovery(host, created.provider); return dispose;
+  const dispose = (notify = true) => { created.dispose(); if (host[REGISTRATION_KEY] === registration) { delete host[REGISTRATION_KEY]; if (notify) { notifyDiscovery(host, undefined); publishProvider(host, undefined); } } };
+  registration = { provider: created.provider, dispose }; Object.defineProperty(host, REGISTRATION_KEY, { configurable: true, enumerable: false, value: registration, writable: true }); notifyDiscovery(host, created.provider); publishProvider(host, created.provider); return dispose;
 }
 export function getSubagentActivityProvider(pi: unknown): SubagentActivityProvider | undefined { return (hostFor(pi)?.[REGISTRATION_KEY] as Registration | undefined)?.provider; }
 export function watchSubagentActivityProvider(pi: unknown, listener: ProviderWatcher): (() => void) | undefined {
-  const host = hostFor(pi); if (!host || typeof listener !== 'function') return undefined; const discovery = discoveryFor(host); let subscribed = true; discovery.listeners.add(listener);
-  try { listener(discovery.provider); } catch { /* discovery observers must not break subscription */ }
-  return () => { if (!subscribed) return; subscribed = false; discovery.listeners.delete(listener); if (!discovery.listeners.size && host[DISCOVERY_KEY] === discovery) delete host[DISCOVERY_KEY]; };
+  const host = hostFor(pi); if (!host || typeof listener !== 'function') return undefined; const discovery = discoveryFor(host); let subscribed = true; let seen = false; let current: SubagentActivityProvider | undefined;
+  const notify = (provider: SubagentActivityProvider | undefined) => { if (seen && current === provider) return; seen = true; current = provider; try { listener(provider); } catch { /* discovery observers must not break subscription */ } };
+  discovery.listeners.add(notify); const events = eventBusFor(host); const stopEvents = events?.on(SUBAGENT_ACTIVITY_PROVIDER_CHANGED_CHANNEL, (provider) => notify(provider as SubagentActivityProvider | undefined)); notify(discovery.provider); events?.emit(SUBAGENT_ACTIVITY_PROVIDER_REQUEST_CHANNEL, undefined);
+  return () => { if (!subscribed) return; subscribed = false; discovery.listeners.delete(notify); stopEvents?.(); if (!discovery.listeners.size && host[DISCOVERY_KEY] === discovery) delete host[DISCOVERY_KEY]; };
 }
