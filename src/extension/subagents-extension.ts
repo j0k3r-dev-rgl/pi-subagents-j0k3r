@@ -1,4 +1,5 @@
 import { readSubagentsConfig, subagentSourceWarnings } from '../config.js';
+import { disposeSubagentActivityProvider, registerSubagentActivityProvider } from '../activity-provider.js';
 import { SubagentManager } from '../manager.js';
 import { runSubagentModelsCommand } from '../model-profiles-ui.js';
 import { renderSubagentCompletionMessage, sendSubagentCompletionMessage } from '../render/completion-message.js';
@@ -18,8 +19,11 @@ export default function subagentsExtension(pi: any): void {
   const manager = new SubagentManager(undefined, undefined, (task, cwd) => {
     sendSubagentCompletionMessage(pi, task, cwd);
   });
+  disposeSubagentActivityProvider(pi);
   registerSubagentTools(pi, manager, process.cwd());
 
+  let disposeActivityProvider: (() => void) | undefined;
+  const clearActivityProvider = () => { disposeActivityProvider?.(); disposeActivityProvider = undefined; };
   let widgetTimer: NodeJS.Timeout | undefined;
   let widgetCtx: any;
   let widgetRequestRender: (() => void) | undefined;
@@ -74,8 +78,11 @@ export default function subagentsExtension(pi: any): void {
 
   pi.on?.('session_start', (_event: unknown, ctx: any) => {
     clearClaudeBackgroundWidget();
+    clearActivityProvider();
     const cwd = ctx?.cwd ?? process.cwd();
+    const sessionId = currentSessionId(ctx);
     manager.reconcileOrphanedTasks(cwd);
+    if (typeof ctx?.cwd === 'string' && ctx.cwd.length > 0 && sessionId) disposeActivityProvider = registerSubagentActivityProvider(pi, manager, { cwd: ctx.cwd, sessionId });
     for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
     if (typeof ctx?.ui?.setWidget !== 'function') return;
     widgetCtx = ctx;
@@ -85,6 +92,7 @@ export default function subagentsExtension(pi: any): void {
   });
 
   pi.on?.('session_shutdown', () => {
+    clearActivityProvider();
     manager.cancelRunning('Pi session shutdown');
     clearClaudeBackgroundWidget();
   });

@@ -268,6 +268,8 @@ type SendMessageInput = {
   session_id?: string;
 };
 
+type TaskUpdateListener = (task: SubagentTask) => void;
+
 type LaunchAttemptInput = {
   definition: SubagentDefinition;
   taskText: string;
@@ -296,12 +298,22 @@ export class SubagentManager {
   private runnerSettlements = new Map<string, Promise<void>>();
   private stopDispositions = new Map<string, StopDisposition>();
   private liveStates = new Map<string, LiveTaskState>();
+  private taskUpdateListeners = new Set<TaskUpdateListener>();
 
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
     private history = new SubagentHistoryStore(),
     private onTerminalBackgroundTask?: (task: SubagentTask, cwd: string) => void,
   ) {}
+
+  listLiveTasks(cwd: string, sessionId: string): readonly SubagentTask[] {
+    return [...this.tasks.values()].filter((task) => this.taskCwds.get(task.id) === cwd && task.session_id === sessionId);
+  }
+
+  subscribeTaskUpdates(listener: TaskUpdateListener): () => void {
+    this.taskUpdateListeners.add(listener);
+    return () => this.taskUpdateListeners.delete(listener);
+  }
 
   listAgents(cwd: string, ctx: any = {}) {
     const config = readSubagentsConfig(cwd);
@@ -387,6 +399,7 @@ export class SubagentManager {
       task.mode = 'background';
       task.effective_mode = 'background';
       this.record(cwd, task, task.last_activity ?? 'running', true);
+      this.notifyTaskUpdate(id, undefined, true);
       changed.push(task);
     }
     return changed;
@@ -670,6 +683,7 @@ export class SubagentManager {
       task.pending_message_count = 0;
       task.undelivered_message_count = task.undelivered_message_count ?? 0;
       if (cwd) this.record(cwd, task, task.last_activity, true);
+      this.notifyTaskUpdate(id, undefined, true);
       return task;
     }
     if (task.status === 'stopping') return task;
@@ -1047,20 +1061,29 @@ export class SubagentManager {
   }
 
   private notifyTaskUpdate(taskId: string, onTaskUpdate: (() => void) | undefined, immediate = false): void {
-    if (!onTaskUpdate) return;
+    if (!onTaskUpdate && !this.taskUpdateListeners.size) return;
     const task = this.tasks.get(taskId);
-    if (!immediate && task && (task.status === 'stopping' || isTerminalStatus(task.status))) return;
+    if (!task) return;
+    if (!immediate && (task.status === 'stopping' || isTerminalStatus(task.status))) return;
+    const emit = () => {
+      const current = this.tasks.get(taskId);
+      if (!current) return;
+      for (const listener of [...this.taskUpdateListeners]) {
+        try { listener(current); } catch { /* observers must not break delegation */ }
+      }
+      onTaskUpdate?.();
+    };
     if (immediate) {
       const pending = this.pendingUpdates.get(taskId);
       if (pending) clearTimeout(pending);
       this.pendingUpdates.delete(taskId);
-      onTaskUpdate();
+      emit();
       return;
     }
     if (this.pendingUpdates.has(taskId)) return;
     const timer = setTimeout(() => {
       this.pendingUpdates.delete(taskId);
-      onTaskUpdate();
+      emit();
     }, ACTIVITY_UPDATE_FLUSH_MS);
     timer.unref?.();
     this.pendingUpdates.set(taskId, timer);
