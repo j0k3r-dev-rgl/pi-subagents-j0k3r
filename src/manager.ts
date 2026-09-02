@@ -296,6 +296,7 @@ export class SubagentManager {
   private runnerSettlements = new Map<string, Promise<void>>();
   private stopDispositions = new Map<string, StopDisposition>();
   private liveStates = new Map<string, LiveTaskState>();
+  private taskUpdateListeners = new Set<() => void>();
 
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
@@ -326,14 +327,23 @@ export class SubagentManager {
     return [...active, ...persisted].sort(compareTasksByRecentActivity);
   }
 
-  listSessionTasks(cwd?: string, sessionId?: string) {
-    const active = [...this.tasks.values()]
+  listActiveSessionTasks(cwd?: string, sessionId?: string) {
+    return [...this.tasks.values()]
       .filter((task) => (!cwd || this.taskCwds.get(task.id) === cwd) && (!sessionId || task.session_id === sessionId))
       .sort(compareTasksByRecentActivity);
+  }
+
+  listSessionTasks(cwd?: string, sessionId?: string) {
+    const active = this.listActiveSessionTasks(cwd, sessionId);
     if (!cwd || !sessionId) return active;
     const activeIds = new Set(active.map((task) => task.id));
     const persisted = this.cachedPersistedSessionTasks(cwd, sessionId).filter((task) => !activeIds.has(task.id));
     return [...active, ...persisted].sort(compareTasksByRecentActivity);
+  }
+
+  onTaskUpdate(listener: () => void): () => void {
+    this.taskUpdateListeners.add(listener);
+    return () => { this.taskUpdateListeners.delete(listener); };
   }
 
   getTask(id: string, cwd?: string) {
@@ -996,7 +1006,10 @@ export class SubagentManager {
     const cached = this.sessionTaskCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.tasks;
     try {
-      const tasks = this.history.listSessionTasks(cwd, sessionId, 100, { includeSnapshots: false });
+      const listMetadata = (this.history as any).listSessionTaskMetadata as ((cwd: string, sessionId: string, limit?: number) => SubagentTask[]) | undefined;
+      const tasks = typeof listMetadata === 'function'
+        ? listMetadata.call(this.history, cwd, sessionId, 100)
+        : this.history.listSessionTasks(cwd, sessionId, 100, { includeSnapshots: false });
       this.sessionTaskCache.set(key, { expiresAt: Date.now() + SESSION_TASK_CACHE_MS, tasks });
       return tasks;
     } catch (error) {
@@ -1047,20 +1060,24 @@ export class SubagentManager {
   }
 
   private notifyTaskUpdate(taskId: string, onTaskUpdate: (() => void) | undefined, immediate = false): void {
-    if (!onTaskUpdate) return;
+    const notify = () => {
+      onTaskUpdate?.();
+      for (const listener of this.taskUpdateListeners) listener();
+    };
     const task = this.tasks.get(taskId);
     if (!immediate && task && (task.status === 'stopping' || isTerminalStatus(task.status))) return;
     if (immediate) {
       const pending = this.pendingUpdates.get(taskId);
       if (pending) clearTimeout(pending);
       this.pendingUpdates.delete(taskId);
-      onTaskUpdate();
+      notify();
       return;
     }
+    if (!onTaskUpdate && !this.taskUpdateListeners.size) return;
     if (this.pendingUpdates.has(taskId)) return;
     const timer = setTimeout(() => {
       this.pendingUpdates.delete(taskId);
-      onTaskUpdate();
+      notify();
     }, ACTIVITY_UPDATE_FLUSH_MS);
     timer.unref?.();
     this.pendingUpdates.set(taskId, timer);

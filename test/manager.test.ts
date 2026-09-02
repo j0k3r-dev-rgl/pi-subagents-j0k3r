@@ -1272,6 +1272,33 @@ describe('manager and history integration', () => {
     }
   });
 
+  it('answers active session task state from memory without querying persisted history', () => {
+    const history = {
+      listSessionTasks: vi.fn(() => { throw new Error('heavy history should not be read'); }),
+      listSessionTaskMetadata: vi.fn(() => { throw new Error('metadata history should not be read'); }),
+      listTasks() { return []; },
+      getTask() { return undefined; },
+      upsertTask() {},
+      addEvent() {},
+    };
+    const manager = new SubagentManager(mockRunner(), history as any);
+    const task = {
+      id: 'subtask_active_only',
+      agent: 'analyst',
+      mode: 'background',
+      status: 'running',
+      task: 'active only',
+      created_at: '2026-01-01T00:00:00.000Z',
+      session_id: 'session-current',
+    } as SubagentTask;
+    (manager as any).tasks.set(task.id, task);
+    (manager as any).taskCwds.set(task.id, tmp);
+
+    expect(manager.listActiveSessionTasks(tmp, 'session-current')).toEqual([task]);
+    expect(history.listSessionTasks).not.toHaveBeenCalled();
+    expect(history.listSessionTaskMetadata).not.toHaveBeenCalled();
+  });
+
   it('lists persisted current-session tasks after manager reload while excluding other sessions', () => {
     const history = new SubagentHistoryStore();
     const sessionTask: SubagentTask = {
@@ -1431,7 +1458,7 @@ describe('manager and history integration', () => {
     expect(persisted?.thread_snapshot).toEqual(finalSnapshot);
   });
 
-  it('can list session history without parsing thread snapshots and hydrate them on demand', () => {
+  it('can list session history metadata without heavyweight payloads and hydrate them on demand', () => {
     const store = new SubagentHistoryStore();
     const task: SubagentTask = {
       id: 'subtask_lazy_history_1',
@@ -1441,15 +1468,24 @@ describe('manager and history integration', () => {
       task: 'lazy history snapshot',
       created_at: new Date().toISOString(),
       session_id: 'session-lazy',
+      prompt: 'heavy prompt body',
+      transcript: 'heavy transcript body',
+      result: 'heavy result body',
       thread_snapshot: statusSnapshot('lazy snapshot body'),
     } as any;
     store.upsertTask(tmp, task);
 
-    const listed = store.listSessionTasks(tmp, 'session-lazy', 100, { includeSnapshots: false });
+    const listed = store.listSessionTaskMetadata(tmp, 'session-lazy');
     expect(listed).toHaveLength(1);
+    expect(listed[0].prompt).toBeUndefined();
+    expect(listed[0].transcript).toBeUndefined();
+    expect(listed[0].result).toBeUndefined();
     expect(listed[0].thread_snapshot).toBeUndefined();
 
     const hydrated = store.getTask(tmp, task.id);
+    expect(hydrated?.prompt).toBe('heavy prompt body');
+    expect(hydrated?.transcript).toBe('heavy transcript body');
+    expect(hydrated?.result).toBe('heavy result body');
     expect(hydrated?.thread_snapshot).toEqual(statusSnapshot('lazy snapshot body'));
   });
 

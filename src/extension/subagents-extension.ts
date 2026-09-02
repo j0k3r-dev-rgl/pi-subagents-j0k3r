@@ -20,10 +20,10 @@ export default function subagentsExtension(pi: any): void {
   });
   registerSubagentTools(pi, manager, process.cwd());
 
-  let widgetTimer: NodeJS.Timeout | undefined;
   let widgetCtx: any;
   let widgetRequestRender: (() => void) | undefined;
   let removeTerminalInputListener: (() => void) | undefined;
+  let removeTaskUpdateListener: (() => void) | undefined;
   let widgetState: ClaudeBackgroundWidgetState | undefined;
   let widgetInputSuspended = false;
   let activePanelCancelSelected: (() => void) | undefined;
@@ -34,9 +34,10 @@ export default function subagentsExtension(pi: any): void {
     const cwd = ctx?.cwd ?? process.cwd();
     const sessionId = currentSessionId(ctx);
     widgetState = new ClaudeBackgroundWidgetState(
-      () => manager.listSessionTasks(cwd, sessionId).slice(0, 100),
+      () => manager.listActiveSessionTasks(cwd, sessionId),
       () => widgetRequestRender?.(),
     );
+    removeTaskUpdateListener = manager.onTaskUpdate(() => widgetRequestRender?.());
     if (typeof ctx?.ui?.onTerminalInput === 'function') {
       removeTerminalInputListener = ctx.ui.onTerminalInput((data: string) => {
         if (widgetInputSuspended) return undefined;
@@ -61,9 +62,9 @@ export default function subagentsExtension(pi: any): void {
   };
 
   const clearClaudeBackgroundWidget = () => {
-    if (widgetTimer) clearInterval(widgetTimer);
-    widgetTimer = undefined;
     widgetRequestRender = undefined;
+    removeTaskUpdateListener?.();
+    removeTaskUpdateListener = undefined;
     removeTerminalInputListener?.();
     removeTerminalInputListener = undefined;
     widgetState = undefined;
@@ -80,8 +81,6 @@ export default function subagentsExtension(pi: any): void {
     if (typeof ctx?.ui?.setWidget !== 'function') return;
     widgetCtx = ctx;
     if (!installClaudeBackgroundWidget(ctx)) return;
-    widgetTimer = setInterval(() => widgetRequestRender?.(), 250);
-    widgetTimer.unref?.();
   });
 
   pi.on?.('session_shutdown', () => {

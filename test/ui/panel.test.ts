@@ -1136,6 +1136,32 @@ describe('subagents panel and extension ui', () => {
     }
   });
 
+  it('does not install a recurring background widget timer at session startup', async () => {
+    const handlers: Record<string, any> = {};
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    try {
+      extension({
+        on: (event: string, handler: any) => { handlers[event] = handler; },
+        registerTool: () => undefined,
+        registerCommand: () => undefined,
+        registerShortcut: () => undefined,
+      });
+
+      await handlers.session_start?.({}, {
+        cwd: tmp,
+        ui: {
+          setWidget: vi.fn(),
+          onTerminalInput: vi.fn(() => () => undefined),
+        },
+      });
+
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      await handlers.session_shutdown?.({}, { ui: { setWidget: vi.fn() } });
+    }
+  });
+
   it('registers terminal input routing and cleans it up on shutdown', async () => {
     const handlers: Record<string, any> = {};
     const off = vi.fn();

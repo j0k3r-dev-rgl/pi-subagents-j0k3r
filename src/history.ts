@@ -54,6 +54,43 @@ function parseSnapshotJson(text: unknown): SubagentThreadSnapshot | undefined {
 }
 type HistoryReadOptions = { includeSnapshots?: boolean };
 
+const SESSION_TASK_METADATA_COLUMNS = `
+        id,
+        cwd,
+        agent,
+        mode,
+        status,
+        task,
+        context,
+        created_at,
+        attempt,
+        session_id,
+        nested_session_path,
+        started_at,
+        ended_at,
+        last_activity_at,
+        last_activity,
+        output_preview,
+        usage_input,
+        usage_output,
+        usage_cache_read,
+        usage_cache_write,
+        usage_cost,
+        usage_context_tokens,
+        usage_turns,
+        model,
+        effort,
+        model_source,
+        effort_source,
+        fallback_used,
+        error,
+        error_metadata_json,
+        error_category,
+        pi_retry_attempts,
+        pending_message_count,
+        undelivered_message_count
+`;
+
 function ensureColumn(db: Db, table: string, column: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
   if (!columns.some((row) => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
@@ -403,6 +440,15 @@ export class SubagentHistoryStore {
     `).all(cwd, sessionId, limit).map((row) => rowToTask(row, options));
   }
 
+  listSessionTaskMetadata(cwd: string, sessionId: string, limit = 100): SubagentTask[] {
+    return this.db(cwd).prepare(`
+      SELECT ${SESSION_TASK_METADATA_COLUMNS}
+      FROM subagent_tasks WHERE cwd = ? AND session_id = ?
+      ORDER BY COALESCE(last_activity_at, started_at, created_at) DESC, created_at DESC, id DESC
+      LIMIT ?
+    `).all(cwd, sessionId, limit).map((row) => rowToTask(row, { includeSnapshots: false }));
+  }
+
   listTasksByStatus(cwd: string, statuses: SubagentTask['status'][], options: HistoryReadOptions = {}): SubagentTask[] {
     if (!statuses.length) return [];
     const placeholders = statuses.map(() => '?').join(', ');
@@ -483,7 +529,7 @@ function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
     continuation_prompt: row.continuation_prompt ?? undefined,
     system_prompt: row.system_prompt ?? undefined,
     transcript: row.transcript ?? undefined,
-    usage: row.usage_input === null && row.usage_output === null && row.usage_cache_read === null && row.usage_cache_write === null && row.usage_cost === null && row.usage_context_tokens === null && row.usage_turns === null ? undefined : {
+    usage: row.usage_input == null && row.usage_output == null && row.usage_cache_read == null && row.usage_cache_write == null && row.usage_cost == null && row.usage_context_tokens == null && row.usage_turns == null ? undefined : {
       input: row.usage_input ?? 0,
       output: row.usage_output ?? 0,
       cacheRead: row.usage_cache_read ?? 0,
