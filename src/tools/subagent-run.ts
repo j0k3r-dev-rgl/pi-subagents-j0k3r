@@ -9,7 +9,7 @@ import { installBackgroundHandoffShortcut } from './background-handoff-state.js'
 import { compactResultDetails, compactTaskForToolResult } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
-export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, onCancel: () => void): () => void {
+export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, onCancel: () => void, getTaskIds: () => string[] = () => []): () => void {
   let lastEscapeAt = 0;
   const unsubscribe = ctx?.ui?.onTerminalInput?.((data: string) => {
     if (data !== '\u001b') return undefined;
@@ -18,7 +18,13 @@ export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, on
     lastEscapeAt = now;
     if (!isDoubleEscape) return { consume: true };
     onCancel();
-    const cancelled = manager.cancelRunning('cancelled by double escape');
+    const ids = getTaskIds();
+    const cancelled = ids.length
+      ? ids.map((id) => {
+        try { return manager.cancel(id, 'cancelled by double escape'); }
+        catch { return undefined; }
+      }).filter(Boolean)
+      : manager.cancelRunning('cancelled by double escape');
     ctx?.abort?.();
     ctx?.ui?.notify?.(
       cancelled.length ? `Cancelled ${cancelled.length} subagent task(s).` : 'Requested subagent/main cancellation.',
@@ -71,7 +77,7 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
         }
       };
       const interval = isBackground ? undefined : setInterval(emit, 500);
-      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; });
+      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
       const uninstallBackground = canBackgroundInTaskMode
         ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
           active = false;

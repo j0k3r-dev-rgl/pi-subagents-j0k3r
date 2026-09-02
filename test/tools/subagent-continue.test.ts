@@ -107,13 +107,21 @@ describe('subagent_continue tool', () => {
     expect(result.content[0].text).toContain('live continuation done');
   });
 
-  it('supports double-escape cancellation while a continued task is running', async () => {
+  it('supports double-escape cancellation while a continued task is running without cancelling background tasks', async () => {
     await enableContinue();
     env.writeAgent('analyst');
+    env.writeAgent('backgrounder');
     const nestedSessionPath = `${env.tmp}/cancel-live-resume-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
-    const manager = new SubagentManager(async ({ continuation, signal, onActivity }) => {
+    const manager = new SubagentManager(async ({ definition, continuation, signal, onActivity }) => {
       onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      if (definition.name === 'backgrounder') {
+        await new Promise<void>((_resolve, reject) => {
+          if (signal.aborted) reject(new Error('aborted'));
+          else signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+        return { result: 'background unreachable', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
+      }
       if (!continuation) return { result: 'initial result', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
       await new Promise<void>((_resolve, reject) => {
         if (signal.aborted) reject(new Error('aborted'));
@@ -124,6 +132,8 @@ describe('subagent_continue tool', () => {
     let continueTool: any;
     registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
+    const background = await manager.run({ agent: 'backgrounder', task: 'unrelated background execution', mode: 'background' }, { cwd: env.tmp });
+    const backgroundId = background.task_ids[0]!;
     const terminalHandlers: Array<(data: string) => any> = [];
     const abort = vi.fn();
     const resultPromise = continueTool.execute(
@@ -144,6 +154,8 @@ describe('subagent_continue tool', () => {
     expect(result.content[0].text).toContain('cancelled by double escape');
     expect(result.content[0].text).toContain('can be resumed with `subagent_continue`');
     expect(manager.getTask(first.task_ids[0]!, env.tmp)?.status).toBe('cancelled');
+    expect(manager.getTask(backgroundId, env.tmp)?.status).toBe('running');
+    manager.cancel(backgroundId, 'test cleanup');
   });
 
   it('starts a fresh continuation attempt without restoring the prior live queue', async () => {
