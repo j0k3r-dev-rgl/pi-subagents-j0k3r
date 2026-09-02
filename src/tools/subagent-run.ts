@@ -34,16 +34,19 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
   return {
     name: 'subagent_run',
     label: 'Subagent Run',
-    description: 'Delegate a task to one or more markdown-defined subagents. Always omit mode unless the user explicitly requested task or background; the manager will choose automatically. Use mode=task to wait or mode=background to free the chat and wait for the automatic completion notification when the user explicitly asked for that behavior.',
-    promptSnippet: 'Delegate analysis/review/test/design tasks to subagents. Always omit mode unless the user explicitly requested task or background; the manager chooses automatically when mode is omitted.',
+    description: 'Delegate a task to exactly one markdown-defined subagent. Always omit mode unless the user explicitly requested task or background; the manager will choose automatically. Use mode=task to wait. Use mode=background only when the user explicitly asked for background; after launch, respond to the user and wait for the automatic completion notification instead of sleeping, polling status, or fetching results just to wait.',
+    promptSnippet: 'Delegate analysis/review/test/design tasks to one subagent. Always omit mode unless the user explicitly requested task or background. If launched in background, respond immediately and wait for the automatic completion notification; do not sleep or poll status just to wait.',
     parameters: Type.Object({
-      agent: Type.Optional(Type.String()),
-      agents: Type.Optional(Type.Array(Type.String())),
+      agent: Type.String(),
       task: Type.String(),
       context: Type.Optional(Type.String()),
       mode: Type.Optional(Type.Union([Type.Literal('task'), Type.Literal('background')])),
     }),
     async execute(_id: string, params: any, _signal: any, onUpdate: any, ctx: any) {
+      if (Array.isArray(params?.agents) || typeof params?.agent !== 'string' || !params.agent.trim()) {
+        return fail('subagent_run accepts exactly one agent. Use the `agent` string parameter, not `agents`.');
+      }
+
       let cancelledByDoubleEscape = false;
       let frame = 0;
       let active = true;

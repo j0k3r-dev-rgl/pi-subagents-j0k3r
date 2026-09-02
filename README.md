@@ -5,7 +5,7 @@ Pi extension for delegating work to markdown-defined subagents. Continuation is 
 ## What it provides
 
 - Markdown-defined subagents loaded from global and project directories.
-- `subagent_run` for task-mode or background delegation to one or many agents.
+- `subagent_run` for task-mode or background delegation to one agent per call.
 - Optional `subagent_continue` for resuming the exact persisted nested session with optional mode/model/effort overrides when `enable_continue: true`.
 - `subagent_send_message` for live same-parent steering of owned background tasks on supported Pi runtimes.
 - Status/result/list/cancel tools for delegated tasks.
@@ -332,7 +332,7 @@ Useful event names:
 | Tool | Purpose |
 |---|---|
 | `subagent_list_agents` | List loaded markdown-defined subagents. |
-| `subagent_run` | Delegate a task to one or more subagents. Supports `task` and `background` mode. |
+| `subagent_run` | Delegate a task to exactly one subagent. Supports `task` and `background` mode. |
 | `subagent_continue` | Enabled only when `enable_continue: true`. Resumes a completed, failed, or cancelled task in the same persisted nested Pi session, with an optional continuation-mode override. |
 | `subagent_status` | Get status for a delegated task. |
 | `subagent_send_message` | Queue a live message for an owned running background task. |
@@ -348,8 +348,7 @@ Parameters:
 
 ```ts
 {
-  agent?: string;
-  agents?: string[];
+  agent: string;
   task: string;
   context?: string;
   mode?: "task" | "background";
@@ -360,30 +359,18 @@ Behavior:
 
 - Invocation mode stays optional. Effective resolution is `input.mode ?? definition.subagent_mode ?? config.default_mode`, where `default_mode` falls back to `"task"`.
 - `mode: "task"` waits for completion and returns compact task summaries.
-- `mode: "background"` returns task IDs immediately. Keep using the parent chat and wait for the automatic completion/failure turn; use status/result tools only when you explicitly need an intermediate status or stored result, not to poll just for completion.
-- When `mode` is omitted, a mixed batch can return `mode: "mixed"` plus `waited_task_ids`, `background_task_ids`, and per-member `effective_mode` rows.
-- Multiple agents can run from one request with `agents`.
+- `mode: "background"` returns task IDs immediately. Respond to the user and wait for the automatic completion/failure turn; do not sleep, poll status, or fetch results just to wait. Use status/result tools only when you explicitly need an intermediate status or stored result.
+- Batch input is intentionally unsupported: call `subagent_run` once per subagent so each delegation has an isolated lifecycle, result, and failure surface.
 - Double Escape during task-mode execution cancels running subagents and aborts the main turn.
 
 Examples:
 
 ```ts
-// Omitted mode: each definition uses its own default.
-{ agents: ["analyst", "reviewer"], task: "review the plan" }
+// Omitted mode: the selected definition uses its own default.
+{ agent: "analyst", task: "review the plan" }
 
-// Explicit override: force every selected member into background mode.
-{ agents: ["analyst", "reviewer"], task: "review the plan", mode: "background" }
-
-// Mixed omitted-mode result shape.
-{
-  mode: "mixed",
-  waited_task_ids: ["subtask_analyst_..."],
-  background_task_ids: ["subtask_reviewer_..."],
-  members: [
-    { agent: "analyst", effective_mode: "task" },
-    { agent: "reviewer", effective_mode: "background" }
-  ]
-}
+// Explicit override: run this single delegation in background mode.
+{ agent: "reviewer", task: "review the plan", mode: "background" }
 ```
 
 ### `subagent_continue`

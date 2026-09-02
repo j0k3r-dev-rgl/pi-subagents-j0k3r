@@ -16,7 +16,7 @@ function resolveRenderedSubagentRunMode(args: any, cwd: string): SubagentMode | 
   if (args.mode === 'task' || args.mode === 'background') return args.mode;
   const config = readSubagentsConfig(cwd);
   const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
-  const names = args.agents?.length ? args.agents : args.agent ? [args.agent] : [];
+  const names = args.agent ? [args.agent] : [];
   const modes = new Set(names.map((name: string) => resolveEffectiveSubagentMode({
     invocationMode: args.mode,
     definition: definitions.get(String(name).toLowerCase()),
@@ -29,8 +29,8 @@ function resolveRenderedSubagentRunMode(args: any, cwd: string): SubagentMode | 
 
 export function renderSubagentRunCall(args: any, theme: any) {
   const cwd = process.cwd();
-  const agents = args.agents?.length ? args.agents.join(', ') : args.agent ?? 'subagent';
-  return renderSubagentTaskCall(agents, resolveRenderedSubagentRunMode(args, cwd), theme);
+  const agent = args.agent ?? 'subagent';
+  return renderSubagentTaskCall(agent, resolveRenderedSubagentRunMode(args, cwd), theme);
 }
 
 export function renderSubagentRunResult(result: any, { expanded, isPartial }: any, theme: any) {
