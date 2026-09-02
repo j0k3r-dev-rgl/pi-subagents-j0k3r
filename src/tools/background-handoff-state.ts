@@ -2,7 +2,14 @@ import { readSubagentsConfig } from '../config.js';
 import type { SubagentManager } from '../manager.js';
 import type { SubagentTask } from '../types.js';
 
-const activeClaudeBackgroundHandoffs = new Set<() => SubagentTask[]>();
+type BackgroundHandoffEntry = {
+  createdAt: number;
+  handoff: () => SubagentTask[];
+  hasActiveTask: () => boolean;
+};
+
+const activeClaudeBackgroundHandoffs = new Set<BackgroundHandoffEntry>();
+let backgroundHandoffSequence = 0;
 
 function sendTasksToBackground(
   ctx: any,
@@ -21,8 +28,11 @@ function sendTasksToBackground(
 }
 
 export function triggerClaudeBackgroundHandoff(): boolean {
-  for (const handoff of [...activeClaudeBackgroundHandoffs]) {
-    if (handoff().length) return true;
+  const candidates = [...activeClaudeBackgroundHandoffs]
+    .filter((entry) => entry.hasActiveTask())
+    .sort((a, b) => b.createdAt - a.createdAt);
+  for (const entry of candidates) {
+    if (entry.handoff().length) return true;
   }
   return false;
 }
@@ -43,13 +53,21 @@ export function installBackgroundHandoffShortcut(
   const shortcut = readSubagentsConfig(ctx?.cwd ?? process.cwd()).background_handoff_shortcut ?? 'ctrl+h';
   const terminalInput = ctrlShortcutToTerminalInput(shortcut);
   const handoff = () => sendTasksToBackground(ctx, manager, getTaskIds, onBackground);
-  activeClaudeBackgroundHandoffs.add(handoff);
+  const entry: BackgroundHandoffEntry = {
+    createdAt: ++backgroundHandoffSequence,
+    handoff,
+    hasActiveTask: () => getTaskIds().some((id) => {
+      const task = manager.getTask(id);
+      return Boolean(task && task.mode !== 'background' && (task.status === 'queued' || task.status === 'running'));
+    }),
+  };
+  activeClaudeBackgroundHandoffs.add(entry);
   const unsubscribe = terminalInput ? ctx?.ui?.onTerminalInput?.((data: string) => {
     if (data !== terminalInput) return undefined;
     return handoff().length ? { consume: true } : undefined;
   }) : undefined;
   return () => {
-    activeClaudeBackgroundHandoffs.delete(handoff);
+    activeClaudeBackgroundHandoffs.delete(entry);
     if (typeof unsubscribe === 'function') unsubscribe();
   };
 }

@@ -106,8 +106,9 @@ describe('subagent_run tool', () => {
     }
   });
 
-  it('returns a background handoff result when ctrl+h shortcut is triggered in task mode', async () => {
+  it('returns a background handoff result for the latest active task-mode run when ctrl+h shortcut is triggered', async () => {
     env.writeAgent('analyst');
+    env.writeAgent('reviewer');
     const manager = new SubagentManager(env.mockRunner(50));
     let runTool: any;
     let shortcutHandler: ((ctx: any) => any) | undefined;
@@ -121,7 +122,15 @@ describe('subagent_run tool', () => {
       },
     });
 
-    const resultPromise = runTool.execute('1', { agent: 'analyst', task: 'render clearly', mode: 'task' }, undefined, undefined, {
+    const firstResultPromise = runTool.execute('1', { agent: 'analyst', task: 'first task mode', mode: 'task' }, undefined, undefined, {
+      cwd: env.tmp,
+      ui: {
+        onTerminalInput: () => () => undefined,
+        notify: (message: string) => { notifications.push(message); },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const secondResultPromise = runTool.execute('2', { agent: 'reviewer', task: 'second task mode', mode: 'task' }, undefined, undefined, {
       cwd: env.tmp,
       ui: {
         onTerminalInput: () => () => undefined,
@@ -132,14 +141,18 @@ describe('subagent_run tool', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     await shortcutHandler?.({ cwd: env.tmp, ui: { notify: (message: string) => { notifications.push(message); } } });
 
-    const result = await resultPromise;
-    const text = result.content[0].text;
-    expect(result.isError).not.toBe(true);
-    expect(result.terminate).toBe(true);
+    const secondResult = await secondResultPromise;
+    const text = secondResult.content[0].text;
+    expect(secondResult.isError).not.toBe(true);
+    expect(secondResult.terminate).toBe(true);
     expect(notifications.some((message) => message.includes('Sent subagent to background:'))).toBe(true);
     expect(text).toContain('Sent 1 subagent task(s) to background');
     const taskId = text.match(/subtask_[^\n]+/)?.[0]!;
-    expect(manager.getTask(taskId, env.tmp)?.mode).toBe('background');
+    expect(manager.getTask(taskId, env.tmp)).toMatchObject({ agent: 'reviewer', mode: 'background' });
+
+    const firstResult = await firstResultPromise;
+    expect(firstResult.content[0].text).toContain('Completed 1 subagent task');
+    expect(firstResult.details.results[0]).toMatchObject({ agent: 'analyst', mode: 'task', status: 'completed' });
   });
 
   it('keeps subagent_run command results compact when tasks include large thread snapshots', async () => {
