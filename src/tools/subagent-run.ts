@@ -76,7 +76,6 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
           active = false;
         }
       };
-      const interval = isBackground ? undefined : setInterval(emit, 500);
       const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
       const uninstallBackground = canBackgroundInTaskMode
         ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
@@ -112,7 +111,6 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
       }
       finally {
         active = false;
-        if (interval) clearInterval(interval);
         uninstallCancel();
         uninstallBackground();
       }

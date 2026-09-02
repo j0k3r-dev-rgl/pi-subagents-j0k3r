@@ -5,26 +5,22 @@ import { collapsedResultHint, formatUsage, taskFinalText } from './formatting.js
 import { progressText } from './progress.js';
 import { taskFromDetails } from '../result-details.js';
 
-export function renderSubagentTaskCall(agent: string, mode: 'task' | 'background' | 'mixed', theme: any, detail?: string) {
+export function renderSubagentTaskCall(agent: string, mode: 'task' | 'background', theme: any, detail?: string) {
   const historyShortcut = readSubagentsConfig(process.cwd()).history_panel_shortcut ?? 'ctrl+,';
   const detailsHint = `(${historyShortcut} or /subagents for details)`;
   const title = `${theme.fg?.('toolTitle', theme.bold?.('subagent ') ?? 'subagent ') ?? 'subagent '}${theme.fg?.('accent', agent) ?? agent}${theme.fg?.('dim', ` (${mode})`) ?? ` (${mode})`} ${theme.fg?.('dim', detailsHint) ?? detailsHint}`;
   return textComponent(detail ? `${title}\n${theme.fg?.('dim', detail) ?? detail}` : title);
 }
 
-function resolveRenderedSubagentRunMode(args: any, cwd: string): SubagentMode | 'mixed' {
+function resolveRenderedSubagentRunMode(args: any, cwd: string): SubagentMode {
   if (args.mode === 'task' || args.mode === 'background') return args.mode;
   const config = readSubagentsConfig(cwd);
   const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
-  const names = args.agent ? [args.agent] : [];
-  const modes = new Set(names.map((name: string) => resolveEffectiveSubagentMode({
+  return resolveEffectiveSubagentMode({
     invocationMode: args.mode,
-    definition: definitions.get(String(name).toLowerCase()),
+    definition: args.agent ? definitions.get(String(args.agent).toLowerCase()) : undefined,
     config,
-  })));
-  if (modes.size > 1) return 'mixed';
-  const firstMode = modes.values().next().value as SubagentMode | undefined;
-  return firstMode ?? resolveEffectiveSubagentMode({ invocationMode: args.mode, config });
+  });
 }
 
 export function renderSubagentRunCall(args: any, theme: any) {

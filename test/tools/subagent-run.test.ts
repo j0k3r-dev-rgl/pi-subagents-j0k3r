@@ -68,6 +68,26 @@ describe('subagent_run tool', () => {
     expect(result.terminate).not.toBe(true);
   });
 
+  it('streams task-mode progress from lifecycle updates without installing a recurring render timer', async () => {
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(env.mockRunner(0));
+    let runTool: any;
+    const updates: any[] = [];
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    try {
+      registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+      const result = await runTool.execute('1', { agent: 'analyst', task: 'event progress', mode: 'task' }, undefined, (update: any) => updates.push(update), { cwd: env.tmp });
+
+      expect(result.isError).not.toBe(true);
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+      expect(updates.length).toBeGreaterThan(1);
+      expect(updates.some((update) => update.content[0].text.includes('status: running'))).toBe(true);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it('returns a background handoff result when ctrl+h shortcut is triggered in task mode', async () => {
     env.writeAgent('analyst');
     const manager = new SubagentManager(env.mockRunner(50));
