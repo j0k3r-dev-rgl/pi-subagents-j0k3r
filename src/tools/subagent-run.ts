@@ -1,5 +1,5 @@
 import { Type } from 'typebox';
-import { readSubagentsConfig } from '../config.js';
+import { loadSubagents, readSubagentsConfig, resolveEffectiveSubagentMode } from '../config.js';
 import type { SubagentManager } from '../manager.js';
 import type { SubagentTask } from '../types.js';
 import { appendSubagentResumeGuidance, formatTask, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
@@ -57,9 +57,12 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
       let frame = 0;
       let active = true;
       let latestTasks: SubagentTask[] = [];
-      const isBackground = params.mode === 'background';
-      const subagentsConfig = readSubagentsConfig(ctx?.cwd ?? process.cwd());
-      const canBackgroundInTaskMode = !isBackground;
+      const cwd = ctx?.cwd ?? process.cwd();
+      const subagentsConfig = readSubagentsConfig(cwd);
+      const definition = loadSubagents(cwd).find((candidate) => candidate.name === params.agent.toLowerCase());
+      const effectiveMode = resolveEffectiveSubagentMode({ invocationMode: params.mode, definition, config: subagentsConfig });
+      const isBackground = effectiveMode === 'background';
+      const canBackgroundInTaskMode = effectiveMode === 'task';
       const backgroundShortcut = subagentsConfig.background_handoff_shortcut ?? 'ctrl+h';
       let resolveBackground: ((value: { mode: 'background'; task_ids: string[] }) => void) | undefined;
       const backgroundPromise = canBackgroundInTaskMode

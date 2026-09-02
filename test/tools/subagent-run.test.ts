@@ -52,6 +52,24 @@ describe('subagent_run tool', () => {
     expect(manager.listTasks(env.tmp)).toHaveLength(0);
   });
 
+  it('treats omitted mode that resolves to background as background UI behavior', async () => {
+    const fs = await import('node:fs');
+    fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ default_mode: 'background' }));
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(env.mockRunner(50));
+    let runTool: any;
+    const onUpdate = vi.fn();
+    const onTerminalInput = vi.fn(() => () => undefined);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+    const result = await runTool.execute('1', { agent: 'analyst', task: 'implicit background instructions' }, undefined, onUpdate, { cwd: env.tmp, ui: { onTerminalInput } });
+
+    expect(result.content[0].text).toContain('Started 1 subagent task(s) to background');
+    expect(result.terminate).not.toBe(true);
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(onTerminalInput).not.toHaveBeenCalled();
+  });
+
   it('tells the agent to free the chat and wait for automatic notification after background launch', async () => {
     env.writeAgent('analyst');
     const manager = new SubagentManager(env.mockRunner(50));
