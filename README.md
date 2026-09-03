@@ -352,6 +352,7 @@ Parameters:
   task: string;
   context?: string;
   mode?: "task" | "background";
+  title?: string; // short display name for the nested subagent session
 }
 ```
 
@@ -361,6 +362,7 @@ Behavior:
 - `mode: "task"` waits for completion and returns compact task summaries.
 - `mode: "background"` returns task IDs immediately. Respond to the user and wait for the automatic completion/failure turn; do not sleep, poll status, or fetch results just to wait. Use status/result tools only when you explicitly need an intermediate status or stored result.
 - Batch input is intentionally unsupported: call `subagent_run` once per subagent so each delegation has an isolated lifecycle, result, and failure surface.
+- `title` sets a display name on the nested subagent session directly, before the session starts and before extensions bind. No separate model call is made to name the session: the orchestrator already has the context, so auto-titling extensions (for example `pi-auto-session-titles`) see the name present and skip their own generation. The title is normalized (whitespace collapsed, control characters stripped, capped at 100 characters) and also stored on the task record so it appears in history, `subagent_status`, and `subagent_result`. Continuations keep the persisted session name.
 - Double Escape during task-mode execution cancels running subagents and aborts the main turn.
 
 Examples:
@@ -371,6 +373,9 @@ Examples:
 
 // Explicit override: run this single delegation in background mode.
 { agent: "reviewer", task: "review the plan", mode: "background" }
+
+// Session title: name the nested session directly, no title model call.
+{ agent: "reviewer", task: "review the plan", title: "Review the launch plan" }
 ```
 
 ### `subagent_continue`

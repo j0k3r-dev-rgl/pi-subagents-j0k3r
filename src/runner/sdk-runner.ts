@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveEffectiveSubagentProfile } from '../profile-resolver.js';
 import { SubagentStructuredError } from '../error-metadata.js';
+import { cleanSessionTitle } from '../session-metadata.js';
 import { resolveSubagentsHistoryHome } from '../history.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
 import { getInteractionSessionRegistry } from './interaction-session-registry.js';
@@ -135,6 +136,7 @@ async function createSession(
   ctx: any,
   systemPrompt: string,
   nestedSessionPath?: string,
+  sessionTitle?: string,
 ) {
   const piSdk = await loadPiSdkModule();
   const { createAgentSession, SessionManager } = piSdk;
@@ -146,6 +148,14 @@ async function createSession(
       : SessionManager.inMemory(cwd);
   const resolvedSessionPath = sessionPathFromManager(sessionManager, nestedSessionPath);
   await secureSessionPathWhenReady(resolvedSessionPath);
+  // Apply an orchestrator-supplied title before the nested session starts and
+  // before extensions bind, so auto-titling extensions (for example
+  // pi-auto-session-titles) see a name already present and skip their extra
+  // model call at session_start.
+  if (sessionTitle && typeof sessionManager?.appendSessionInfo === 'function') {
+    const clean = cleanSessionTitle(sessionTitle);
+    if (clean) sessionManager.appendSessionInfo(clean);
+  }
   const options: Record<string, unknown> = {
     cwd,
     model,
@@ -222,7 +232,7 @@ function createLiveSteeringBridge(session: any, piVersion: unknown) {
   };
 }
 
-export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, registerLiveBridge, clearLiveBridge, onQueuedMessageStart, onActivity }) => {
+export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, title, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, registerLiveBridge, clearLiveBridge, onQueuedMessageStart, onActivity }) => {
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
   const effort = profile.effort.value;
@@ -240,7 +250,7 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
 
   async function attempt(model: any) {
     onActivity?.({ message: `starting ${definition.name} with model ${modelLabel(model) ?? 'unknown'}${effort ? ` effort ${effort}` : ''}`, prompt, system_prompt: systemPrompt, effort });
-    const { session, nested_session_path: resolvedNestedSessionPath, pi_version: piVersion } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
+    const { session, nested_session_path: resolvedNestedSessionPath, pi_version: piVersion } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path, title);
     registerLiveBridge?.(createLiveSteeringBridge(session, piVersion));
     onActivity?.({ message: 'nested session ready', nested_session_path: resolvedNestedSessionPath });
     const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());

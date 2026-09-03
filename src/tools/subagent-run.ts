@@ -40,8 +40,8 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
   return {
     name: 'subagent_run',
     label: 'Subagent Run',
-    description: 'Delegate a task to exactly one markdown-defined subagent. Always omit mode unless the user explicitly requested task or background; the manager will choose automatically. Use mode=task to wait. Use mode=background only when the user explicitly asked for background; after launch, respond to the user and wait for the automatic completion notification instead of sleeping, polling status, or fetching results just to wait.',
-    promptSnippet: 'Delegate analysis/review/test/design tasks to one subagent. Always omit mode unless the user explicitly requested task or background. If launched in background, respond immediately and wait for the automatic completion notification; do not sleep or poll status just to wait.',
+    description: 'Delegate a task to exactly one markdown-defined subagent. Always omit mode unless the user explicitly requested task or background; the manager will choose automatically. Use mode=task to wait. Use mode=background only when the user explicitly asked for background; after launch, respond to the user and wait for the automatic completion notification instead of sleeping, polling status, or fetching results just to wait. Optionally pass a short session title for the nested subagent session; it is applied directly so no separate model call is needed to name the session.',
+    promptSnippet: 'Delegate analysis/review/test/design tasks to one subagent. Always omit mode unless the user explicitly requested task or background. If launched in background, respond immediately and wait for the automatic completion notification; do not sleep or poll status just to wait. Optionally pass a short session title for the nested subagent session; it is applied directly without a separate model call.',
     parameters: Type.Object({
       agent: Type.String(),
       task: Type.String(),
@@ -49,6 +49,7 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
       display_name: Type.Optional(Type.String()),
       context: Type.Optional(Type.String()),
       mode: Type.Optional(Type.Union([Type.Literal('task'), Type.Literal('background')])),
+      title: Type.Optional(Type.String({ description: 'Short display title for the nested subagent session. Applied directly to the nested Pi session without a separate model call; auto-titling extensions then skip their own generation.' })),
     }),
     renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, onUpdate: any, ctx: any) {
