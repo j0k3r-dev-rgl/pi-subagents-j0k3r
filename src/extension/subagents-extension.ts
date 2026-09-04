@@ -23,9 +23,19 @@ export default function subagentsExtension(pi: any): void {
     };
   }
   pi.registerMessageRenderer?.('subagent-completion', renderSubagentCompletionMessage);
-  const manager = new SubagentManager(undefined, undefined, (task, cwd) => {
-    sendSubagentCompletionMessage(pi, task, cwd);
-  });
+  const widgetInputSuspensions = new Set<string>();
+  const setWidgetInputSuspended = (reason: string, active: boolean): void => {
+    if (active) widgetInputSuspensions.add(reason);
+    else widgetInputSuspensions.delete(reason);
+  };
+  const manager = new SubagentManager(
+    undefined,
+    undefined,
+    (task, cwd) => {
+      sendSubagentCompletionMessage(pi, task, cwd);
+    },
+    (active) => { setWidgetInputSuspended('interaction', active); },
+  );
   registerSubagentTools(pi, manager, process.cwd());
 
   let widgetCtx: any;
@@ -33,7 +43,6 @@ export default function subagentsExtension(pi: any): void {
   let removeTerminalInputListener: (() => void) | undefined;
   let removeTaskUpdateListener: (() => void) | undefined;
   let widgetState: ClaudeBackgroundWidgetState | undefined;
-  let widgetInputSuspended = false;
   let activePanelCancelSelected: (() => void) | undefined;
   let activePanelRequestRender: (() => void) | undefined;
 
@@ -48,8 +57,9 @@ export default function subagentsExtension(pi: any): void {
     removeTaskUpdateListener = manager.onTaskUpdate(() => widgetRequestRender?.());
     if (typeof ctx?.ui?.onTerminalInput === 'function') {
       removeTerminalInputListener = ctx.ui.onTerminalInput((data: string) => {
-        if (widgetInputSuspended) return undefined;
-        const result = widgetState?.handleTerminalInput(data);
+        if (widgetInputSuspensions.size > 0) return undefined;
+        const editorText = typeof ctx.ui.getEditorText === 'function' ? String(ctx.ui.getEditorText() ?? '') : '';
+        const result = widgetState?.handleTerminalInput(data, { allowActivate: !editorText.trim() });
         if (result?.action?.type === 'open-task' && widgetCtx) {
           const selectedTaskId = result.action.taskId;
           void (async () => {
@@ -59,7 +69,7 @@ export default function subagentsExtension(pi: any): void {
               pi,
               manager,
               selectedTaskId,
-              setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+              setWidgetInputSuspended: (value) => { setWidgetInputSuspended('panel', value); },
               setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
               setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
             });
@@ -82,7 +92,7 @@ export default function subagentsExtension(pi: any): void {
     removeTerminalInputListener?.();
     removeTerminalInputListener = undefined;
     widgetState = undefined;
-    widgetInputSuspended = false;
+    widgetInputSuspensions.clear();
     widgetCtx?.ui?.setWidget?.('subagents-claude-background', undefined);
     widgetCtx = undefined;
   };
@@ -112,7 +122,7 @@ export default function subagentsExtension(pi: any): void {
         ctx,
         pi,
         manager,
-        setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+        setWidgetInputSuspended: (value) => { setWidgetInputSuspended('panel', value); },
         setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
         setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
       });
@@ -146,7 +156,7 @@ export default function subagentsExtension(pi: any): void {
         ctx: { ...ctx, pi },
         pi,
         manager,
-        setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+        setWidgetInputSuspended: (value) => { setWidgetInputSuspended('panel', value); },
         setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
         setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
       });

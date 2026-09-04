@@ -338,7 +338,8 @@ describe('subagent_run tool', () => {
         thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status', text: 'continued with safe' }] },
       } as any;
     });
-    const manager = new SubagentManager(runner);
+    const interactionPromptActive = vi.fn();
+    const manager = new SubagentManager(runner, undefined, undefined, interactionPromptActive);
     let runTool: any;
     registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
     const select = vi.fn(async (message: string, choices: string[]) => {
@@ -353,6 +354,7 @@ describe('subagent_run tool', () => {
     const task = manager.listTasks(env.tmp)[0];
 
     expect(select).toHaveBeenCalledOnce();
+    expect(interactionPromptActive.mock.calls).toEqual([[true], [false]]);
     expect(runner).toHaveBeenCalledTimes(2);
     expect(result.isError).toBeUndefined();
     expect(result.details.results[0].result).toContain('continued with safe');

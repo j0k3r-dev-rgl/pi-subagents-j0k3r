@@ -302,6 +302,7 @@ export class SubagentManager {
     private runner: SubagentRunner = sdkSubagentRunner,
     private history = new SubagentHistoryStore(),
     private onTerminalBackgroundTask?: (task: SubagentTask, cwd: string) => void,
+    private onInteractionPromptActive?: (active: boolean) => void,
   ) {}
 
   listAgents(cwd: string, ctx: any = {}) {
@@ -905,7 +906,13 @@ export class SubagentManager {
           this.notifyTaskUpdate(id, onTaskUpdate, true);
 
           subagentAuditLog(cwd, 'interaction_bridge_prompt_main_thread', { taskId: id, agent: definition.name, ...interactionLogFields(interactionRequest) });
-          const response = publishInteractionResponse(await promptMainThreadForInteraction(ctx, interactionRequest));
+          this.onInteractionPromptActive?.(true);
+          let response: ReturnType<typeof publishInteractionResponse>;
+          try {
+            response = publishInteractionResponse(await promptMainThreadForInteraction(ctx, interactionRequest));
+          } finally {
+            this.onInteractionPromptActive?.(false);
+          }
           subagentAuditLog(cwd, 'interaction_bridge_user_response', { taskId: id, agent: definition.name, requestId: interactionRequest.requestId, status: response.status });
           if (response.status === 'cancelled') throw new Error(`Subagent interaction cancelled by main user: ${interactionRequest.requestId}`);
           if (response.status === 'failed') throw new Error(`Subagent interaction failed: ${response.error ?? interactionRequest.requestId}`);

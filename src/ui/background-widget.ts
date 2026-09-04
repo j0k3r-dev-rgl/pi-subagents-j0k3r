@@ -90,7 +90,7 @@ export class ClaudeBackgroundWidgetState {
     this.handleTerminalInput(data);
   }
 
-  handleTerminalInput(data: string): ClaudeBackgroundTerminalInputResult {
+  handleTerminalInput(data: string, options: { allowActivate?: boolean } = {}): ClaudeBackgroundTerminalInputResult {
     const tasks = this.getTasks();
     if (!tasks.some(isActiveBackgroundTask)) {
       if (this.navigationActive || this.selectedKey !== 'main') {
@@ -102,6 +102,7 @@ export class ClaudeBackgroundWidgetState {
     }
 
     if (matchesKey(data, 'down')) {
+      if (!this.navigationActive && options.allowActivate === false) return undefined;
       this.navigationActive = true;
       const next = moveClaudeBackgroundWidgetSelection(tasks, this.getSelectedKey(), 'down');
       if (next !== this.selectedKey) {

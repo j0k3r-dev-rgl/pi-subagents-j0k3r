@@ -177,6 +177,34 @@ describe('background widget', () => {
     expect(state.handleTerminalInput('x')).toBeUndefined();
   });
 
+  it('does not activate background widget navigation with down when activation is disallowed', () => {
+    const now = new Date().toISOString();
+    const requestRender = vi.fn();
+    const state = new ClaudeBackgroundWidgetState(
+      () => [
+        { id: 'task-1', agent: 'tool-smoke', mode: 'background', status: 'running', task: 'sleep 15', last_activity: 'Running sleep 15.', created_at: now },
+      ] as any,
+      requestRender,
+    );
+    const widget = new ClaudeBackgroundWidget(
+      state,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+    );
+
+    expect(state.handleTerminalInput('\u001b[B', { allowActivate: false })).toBeUndefined();
+    expect(requestRender).not.toHaveBeenCalled();
+    expect(widget.render(200)).toEqual([
+      '○ main',
+      '○ tool-smoke Running sleep 15.',
+    ]);
+
+    expect(state.handleTerminalInput('\u001b[B')).toEqual({ consume: true });
+    expect(widget.render(200)).toEqual([
+      '○ main',
+      '● tool-smoke Running sleep 15.',
+    ]);
+  });
+
   it('renders the selected claude background widget row with warning styling only while navigation is active', () => {
     const now = new Date().toISOString();
     const state = new ClaudeBackgroundWidgetState(
