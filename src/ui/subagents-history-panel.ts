@@ -136,6 +136,17 @@ export class SubagentsHistoryPanel {
 
   invalidate(): void {}
 
+  handleMouse(event: { type?: string; button?: string; wheelDelta?: number }): { handled: true; focus?: boolean; render?: boolean } | undefined {
+    if (event.type === 'wheel') {
+      const delta = Number(event.wheelDelta ?? 0);
+      if (delta < 0) this.scrollBy(-1);
+      else if (delta > 0) this.scrollBy(1);
+      return { handled: true, render: true };
+    }
+    if (event.type === 'press' || event.type === 'click') return { handled: true, focus: true };
+    return { handled: true };
+  }
+
   handleInput(data: string): void {
     const tasks = this.tasks();
     if (this.matchesKey(data, 'escape') || this.matchesKey(data, 'ctrl+c') || this.matchesKey(data, 'q')) {
@@ -156,13 +167,11 @@ export class SubagentsHistoryPanel {
     }
     const wheel = mouseWheelDelta(data);
     if (wheel === -1) {
-      this.scroll = Math.max(0, this.scroll - 1);
-      this.followTail = false;
+      this.scrollBy(-1);
       return;
     }
     if (wheel === 1) {
-      this.scroll += 1;
-      this.followTail = this.scroll >= this.lastMaxScroll;
+      this.scrollBy(1);
       return;
     }
     if (this.matchesKey(data, 'right')) {
@@ -198,6 +207,18 @@ export class SubagentsHistoryPanel {
     if (this.matchesKey(data, 'end')) {
       this.scroll = Number.MAX_SAFE_INTEGER;
       this.followTail = true;
+    }
+  }
+
+  private scrollBy(delta: number): void {
+    if (delta < 0) {
+      this.scroll = Math.max(0, this.scroll + delta);
+      this.followTail = false;
+      return;
+    }
+    if (delta > 0) {
+      this.scroll += delta;
+      this.followTail = this.scroll >= this.lastMaxScroll;
     }
   }
 

@@ -1,6 +1,6 @@
 import { writeSubagentsDebugLog } from '../debug.js';
 import { consumeLatestInteractionRequest, interactionRequestFromCandidate, sanitizeInteractionTransportText } from '../interaction-channel.js';
-import { registerSubagentRuntimeToolDefinition } from '../thread-view.js';
+import { registerSubagentRuntimeToolDefinition, resolveSubagentExternalToolDefinitionFromInfo } from '../thread-view.js';
 import { SubagentStructuredError, classifyAssistantFailure, classifyThrownError, normalizeErrorMetadata } from '../error-metadata.js';
 import type { SubagentInteractionRequest } from '../interaction-channel.js';
 import type { ThinkingEffort, SubagentErrorMetadata, SubagentLiveActivity, SubagentLiveActivityProjection, SubagentThreadSnapshot, UsageStats } from '../types.js';
@@ -111,6 +111,20 @@ function lastAssistantFailure(messages: any[]): { stopReason?: string; errorMess
 
 function eventToolCallId(event: any): string | undefined {
   return event?.toolCallId ?? event?.tool_call_id ?? event?.toolUseId ?? event?.id;
+}
+
+function toolDefinitionFromSession(session: any, name: string | undefined): unknown {
+  if (!name) return undefined;
+  const direct = session.getToolDefinition?.(name);
+  if (direct) return direct;
+  try {
+    const allTools = session.getAllTools?.();
+    if (Array.isArray(allTools)) {
+      const info = allTools.find((tool) => tool?.name === name);
+      return info ? (resolveSubagentExternalToolDefinitionFromInfo(name, info) ?? info) : undefined;
+    }
+  } catch {}
+  return undefined;
 }
 
 function activityLabel(kind: SubagentLiveActivity['kind'], toolNames: string[] = []): string {
@@ -249,7 +263,7 @@ export async function promptWithInactivity(
     }
     if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) {
       sawToolActivity = true;
-      registerSubagentRuntimeToolDefinition(taskId, event?.toolName, session.getToolDefinition?.(event?.toolName));
+      registerSubagentRuntimeToolDefinition(taskId, event?.toolName, toolDefinitionFromSession(session, event?.toolName));
       const toolCallId = eventToolCallId(event);
       if (event.type === 'tool_execution_start' && toolCallId) activeToolCalls.set(toolCallId, { startTime: Date.now(), lastUpdate: Date.now() });
       if (event.type === 'tool_execution_update' && toolCallId) {

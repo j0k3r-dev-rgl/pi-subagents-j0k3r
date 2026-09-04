@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { writeSubagentsDebugLog } from './debug.js';
 
 import type {
@@ -25,6 +26,7 @@ const DEFAULT_TEXT_LIMIT = 4000;
 const DEFAULT_MAX_ITEMS = 200;
 const DEFAULT_RENDER_WIDTH = 100;
 const require = createRequire(import.meta.url);
+let injectedPiComponents: Record<string, any> | undefined;
 let piComponents: Record<string, any> | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -196,14 +198,123 @@ function findRunningPiPackageRoot(): string | undefined {
   }
 }
 
+export function setPiComponentProviderForSubagentRendering(provider: Record<string, any> | undefined): void {
+  injectedPiComponents = provider;
+  piComponents = provider;
+  builtInToolDefinitionCache.clear();
+  toolComponentCacheByTask.clear();
+}
+
 export function resetPiComponentCacheForTests(): void {
+  injectedPiComponents = undefined;
   piComponents = undefined;
   builtInToolDefinitionCache.clear();
+  externalToolDefinitions.clear();
+  externalToolSourcesLoaded.clear();
   runtimeToolDefinitionsByTask.clear();
   toolComponentCacheByTask.clear();
 }
 
+export function registerSubagentExternalToolDefinition(name: string | undefined, definition: unknown): void {
+  if (!name || !definition) return;
+  externalToolDefinitions.set(name, definition);
+  toolComponentCacheByTask.clear();
+}
+
+function hasToolRenderer(definition: unknown): boolean {
+  return isRecord(definition) && (typeof definition.renderCall === 'function' || typeof definition.renderResult === 'function' || definition.renderShell === 'self');
+}
+
+function sourcePathFromToolInfo(info: unknown): string | undefined {
+  if (!isRecord(info) || !isRecord(info.sourceInfo)) return undefined;
+  const rawPath = typeof info.sourceInfo.path === 'string' ? info.sourceInfo.path : undefined;
+  if (!rawPath || rawPath.startsWith('<')) return undefined;
+  const baseDir = typeof info.sourceInfo.baseDir === 'string' ? info.sourceInfo.baseDir : undefined;
+  return path.isAbsolute(rawPath) ? rawPath : baseDir ? path.resolve(baseDir, rawPath) : path.resolve(rawPath);
+}
+
+function createToolCapturePi(captured: unknown[]): Record<string, any> {
+  return {
+    registerTool: (tool: unknown) => { captured.push(tool); },
+    registerCommand: () => undefined,
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    registerMessageRenderer: () => undefined,
+    registerMarkdownTransformer: () => undefined,
+    registerEntryRenderer: () => undefined,
+    on: () => undefined,
+    events: { on: () => undefined, emit: () => undefined },
+    getFlag: () => undefined,
+    getActiveTools: () => [],
+    getAllTools: () => [],
+    setActiveTools: () => undefined,
+    sendMessage: () => undefined,
+    sendUserMessage: () => undefined,
+    appendEntry: () => undefined,
+    exec: async () => ({ stdout: '', stderr: '', code: 0, killed: false }),
+  };
+}
+
+function loadExternalToolSource(sourcePath: string): void {
+  if (externalToolSourcesLoaded.has(sourcePath)) return;
+  externalToolSourcesLoaded.add(sourcePath);
+  if (!fs.existsSync(sourcePath)) return;
+  const packageRoot = findRunningPiPackageRoot();
+  if (!packageRoot) return;
+  try {
+    const piRequire = createRequire(path.join(packageRoot, 'package.json'));
+    const { createJiti } = piRequire('jiti') as { createJiti: (filename: string, options?: Record<string, unknown>) => (id: string) => any };
+    const jiti = createJiti(path.join(packageRoot, 'package.json'), {
+      moduleCache: true,
+      interopDefault: true,
+      alias: {
+        '@earendil-works/pi-coding-agent': packageRoot,
+        '@earendil-works/pi-tui': path.join(packageRoot, 'node_modules', '@earendil-works', 'pi-tui', 'dist', 'index.js'),
+      },
+    });
+    const mod = jiti(sourcePath);
+    const register = mod?.default ?? mod;
+    if (typeof register !== 'function') return;
+    const captured: unknown[] = [];
+    const maybePromise = register(createToolCapturePi(captured));
+    if (maybePromise && typeof maybePromise.then === 'function') return;
+    for (const tool of captured) {
+      if (isRecord(tool) && typeof tool.name === 'string') registerSubagentExternalToolDefinition(tool.name, tool);
+    }
+  } catch {}
+}
+
+export function resolveSubagentExternalToolDefinitionFromInfo(name: string, info: unknown): unknown {
+  if (hasToolRenderer(info)) return info;
+  const existing = externalToolDefinitions.get(name);
+  if (existing) return existing;
+  const sourcePath = sourcePathFromToolInfo(info);
+  if (sourcePath) loadExternalToolSource(sourcePath);
+  return externalToolDefinitions.get(name);
+}
+
+function renderableToolDefinition(name: string, candidates: unknown[], cwd: string): unknown {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (hasToolRenderer(candidate)) return candidate;
+    const rehydrated = resolveSubagentExternalToolDefinitionFromInfo(name, candidate);
+    if (hasToolRenderer(rehydrated)) return rehydrated;
+  }
+  return candidates.find(Boolean) ?? builtInToolDefinition(name, cwd);
+}
+
+function hasUsablePiComponents(value: unknown): value is Record<string, any> {
+  return isRecord(value) && (
+    typeof value.ToolExecutionComponent === 'function'
+    || typeof value.AssistantMessageComponent === 'function'
+    || typeof value.UserMessageComponent === 'function'
+    || typeof value.createReadToolDefinition === 'function'
+    || typeof value.createBashToolDefinition === 'function'
+  );
+}
+
 function loadPiComponents(): Record<string, any> | undefined {
+  if (injectedPiComponents !== undefined) return injectedPiComponents;
   if (piComponents !== undefined) return piComponents;
   const candidates = [
     () => require('@earendil-works/pi-coding-agent') as Record<string, any>,
@@ -220,13 +331,59 @@ function loadPiComponents(): Record<string, any> | undefined {
   for (const candidate of candidates) {
     try {
       const loaded = candidate();
-      if (loaded) {
+      if (hasUsablePiComponents(loaded)) {
         piComponents = loaded;
         return piComponents;
       }
     } catch {}
   }
   return undefined;
+}
+
+async function importPiComponentCandidate(filePath: string | undefined): Promise<Record<string, any> | undefined> {
+  if (!filePath || !fs.existsSync(filePath)) return undefined;
+  try {
+    const loaded = await import(pathToFileURL(filePath).href);
+    return hasUsablePiComponents(loaded) ? loaded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadPiComponentsAsync(): Promise<Record<string, any> | undefined> {
+  const spec = '@earendil-works/pi-coding-agent';
+  try {
+    const loaded = await import(spec);
+    if (hasUsablePiComponents(loaded)) return loaded;
+  } catch {}
+
+  const packageRoot = findRunningPiPackageRoot();
+  if (!packageRoot) return undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')) as { main?: string };
+    const loaded = await importPiComponentCandidate(path.join(packageRoot, parsed.main ?? 'dist/index.js'));
+    if (loaded) return loaded;
+  } catch {}
+
+  const chunksDir = path.join(packageRoot, 'dist', 'bundle', 'chunks');
+  try {
+    for (const entry of fs.readdirSync(chunksDir)) {
+      if (!entry.endsWith('.js')) continue;
+      const loaded = await importPiComponentCandidate(path.join(chunksDir, entry));
+      if (loaded) return loaded;
+    }
+  } catch {}
+  return undefined;
+}
+
+export async function preloadPiComponentsForSubagentRendering(): Promise<boolean> {
+  if (loadPiComponents()) return true;
+  const loaded = await loadPiComponentsAsync();
+  if (!loaded) return false;
+  piComponents = loaded;
+  builtInToolDefinitionCache.clear();
+  toolComponentCacheByTask.clear();
+  return true;
 }
 
 function debugLog(context: Pick<SubagentThreadRenderContext, 'cwd'> | undefined, scope: string, data: unknown): void {
@@ -329,6 +486,8 @@ function renderAttemptItem(item: SubagentAttemptItem, context: SubagentThreadRen
 }
 
 const builtInToolDefinitionCache = new Map<string, unknown>();
+const externalToolDefinitions = new Map<string, unknown>();
+const externalToolSourcesLoaded = new Set<string>();
 const runtimeToolDefinitionsByTask = new Map<string, Map<string, unknown>>();
 const toolComponentCacheByTask = new Map<string, Map<string, unknown>>();
 
@@ -438,7 +597,11 @@ function cachedToolComponent(item: SubagentToolItem, context: SubagentThreadRend
 }
 
 function renderToolItem(item: SubagentToolItem, context: SubagentThreadRenderContext, width: number): string[] {
-  const toolDefinition = context.getToolDefinition?.(item.name) ?? runtimeToolDefinition(context.taskId, item.name) ?? builtInToolDefinition(item.name, context.cwd);
+  const toolDefinition = renderableToolDefinition(item.name, [
+    context.getToolDefinition?.(item.name),
+    externalToolDefinitions.get(item.name),
+    runtimeToolDefinition(context.taskId, item.name),
+  ], context.cwd);
   const componentCtor = loadPiComponents()?.ToolExecutionComponent;
   if (typeof componentCtor === 'function' && context.tui && toolDefinition) {
     try {

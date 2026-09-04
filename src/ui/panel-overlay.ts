@@ -3,6 +3,7 @@ import type { SubagentManager } from '../manager.js';
 import type { SubagentTask } from '../types.js';
 import { createSubagentsRenderLogger } from '../render-debug.js';
 import { truncateToWidth, visibleWidth } from '../render/text-width.js';
+import { resolveSubagentExternalToolDefinitionFromInfo } from '../thread-view.js';
 import { SubagentsHistoryPanel } from './subagents-history-panel.js';
 import { classifySubagentsPanelInput, createSubagentsPanelKeyMatcher } from './panel-input.js';
 
@@ -40,10 +41,23 @@ function toolFromRegistry(registry: any, name: string): unknown {
   return undefined;
 }
 
+function toolsFromAccessor(owner: any, name: string): unknown {
+  if (typeof owner?.getAllTools !== 'function') return undefined;
+  try {
+    const info = toolFromRegistry(owner.getAllTools(), name);
+    return info ? (resolveSubagentExternalToolDefinitionFromInfo(name, info) ?? info) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveRegisteredToolDefinition(ctx: any, pi: any, name: string): unknown {
   return ctx?.pi?.getToolDefinition?.(name)
     ?? pi?.getToolDefinition?.(name)
     ?? ctx?.getToolDefinition?.(name)
+    ?? toolsFromAccessor(ctx?.pi, name)
+    ?? toolsFromAccessor(pi, name)
+    ?? toolsFromAccessor(ctx, name)
     ?? toolFromRegistry(ctx?.pi?.tools, name)
     ?? toolFromRegistry(pi?.tools, name)
     ?? toolFromRegistry(ctx?.tools, name);
@@ -159,6 +173,13 @@ export async function showSubagentsPanel(input: {
             return lines;
           },
           invalidate: () => panel.invalidate(),
+          handleMouse: (event: any) => {
+            nextRenderReason = 'mouse';
+            renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
+            const result = panel.handleMouse(event);
+            if (result?.render !== false) tui.requestRender?.();
+            return result;
+          },
           handleInput: (data: string) => {
             renderLogger.log({ event: 'input_received', input: classifySubagentsPanelInput(data, baseMatchesKey) });
             nextRenderReason = 'input';

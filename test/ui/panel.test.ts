@@ -15,7 +15,7 @@ import { createSubagentsRenderLogger, DEFAULT_RENDER_DEBUG_LOG_PATH } from '../.
 import { SubagentManager } from '../../src/manager.js';
 import { registerSubagentTools } from '../../src/tools.js';
 import { SubagentsHistoryPanel } from '../../src/ui.js';
-import { boundThreadSnapshot, isValidThreadSnapshot, registerSubagentRuntimeToolDefinition, renderThreadBody, resetPiComponentCacheForTests } from '../../src/thread-view.js';
+import { boundThreadSnapshot, isValidThreadSnapshot, preloadPiComponentsForSubagentRendering, registerSubagentRuntimeToolDefinition, renderThreadBody, resetPiComponentCacheForTests, setPiComponentProviderForSubagentRendering } from '../../src/thread-view.js';
 import type { EffectiveSubagentProfile, SubagentErrorMetadata, SubagentModelProfiles, SubagentRunner, SubagentTask } from '../../src/types.js';
 
 const require = createRequire(import.meta.url);
@@ -84,6 +84,130 @@ function readJsonl(file: string): any[] {
 }
 
 describe('subagents panel and extension ui', () => {
+  it('captures later extension tool renderers so inherited tools render inside selected snapshots', () => {
+    resetPiComponentCacheForTests();
+    try {
+      setPiComponentProviderForSubagentRendering({
+        ToolExecutionComponent: class {
+          private result: any;
+          constructor(private name: string, _id: string, private args: any, _options: any, private definition: any) {}
+          markExecutionStarted() {}
+          setArgsComplete() {}
+          updateResult(result: any) { this.result = result; }
+          setExpanded() {}
+          render(width: number) {
+            const call = this.definition.renderCall(this.args, {}, { toolCallId: this.name, isError: false }).render(width).join('\n');
+            const result = this.definition.renderResult(this.result, { expanded: false, isPartial: false }, {}, { isError: false }).render(width).join('\n');
+            return [`captured:${call}:${result}`];
+          }
+        },
+      });
+      const pi: any = { registerTool: (_tool: any) => undefined, registerMessageRenderer: () => undefined, on: () => undefined, registerShortcut: () => undefined, registerCommand: () => undefined };
+      extension(pi);
+      pi.registerTool({
+        name: 'mem_save',
+        label: 'Engram: Save',
+        description: 'memory save',
+        parameters: {},
+        renderShell: 'self',
+        renderCall: (args: any) => ({ render: () => [`engram-call:${args.title}`], invalidate: () => undefined }),
+        renderResult: (result: any) => ({ render: () => [`engram-result:${result.details?.status}`], invalidate: () => undefined }),
+      });
+      const task: SubagentTask = {
+        id: 'subtask_captured_external_renderer',
+        agent: 'analyst',
+        mode: 'task',
+        status: 'completed',
+        task: 'render captured external renderer',
+        created_at: new Date().toISOString(),
+        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'tool', name: 'mem_save', status: 'completed', arguments: { title: 'Fix render' }, result: { content: [{ type: 'text', text: 'Saved' }], details: { status: 'saved' }, isError: false } }] },
+      } as any;
+      const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp, tui: { requestRender() {} } });
+      const rendered = panel.render(160).join('\n');
+      expect(rendered).toContain('captured:engram-call:Fix render:engram-result:saved');
+      expect(rendered).not.toContain('mem_save completed');
+    } finally {
+      resetPiComponentCacheForTests();
+    }
+  });
+
+  it('uses injected Pi tool components for selected thread snapshots instead of fallback text', () => {
+    resetPiComponentCacheForTests();
+    try {
+      setPiComponentProviderForSubagentRendering({
+        ToolExecutionComponent: class {
+          private expanded = false;
+          private result: any;
+          constructor(private name: string, _id: string, private args: any) {}
+          markExecutionStarted() {}
+          setArgsComplete() {}
+          updateResult(result: any) { this.result = result; }
+          setExpanded(expanded: boolean) { this.expanded = expanded; }
+          render() { return [`native-tool:${this.name}:${this.expanded}:${this.args.path}:${this.result?.content?.[0]?.text ?? ''}`]; }
+        },
+        createReadToolDefinition: () => ({ name: 'read' }),
+      });
+      const task: SubagentTask = {
+        id: 'subtask_injected_native_component',
+        agent: 'analyst',
+        mode: 'task',
+        status: 'completed',
+        task: 'render native component',
+        created_at: new Date().toISOString(),
+        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'tool', name: 'read', status: 'completed', arguments: { path: 'AGENTS.md' }, result: { content: [{ type: 'text', text: 'body' }], isError: false } }] },
+      } as any;
+      const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp, tui: { requestRender() {} } });
+      const rendered = panel.render(160).join('\n');
+      expect(rendered).toContain('native-tool:read:false:AGENTS.md:body');
+      expect(rendered).not.toContain('read completed');
+    } finally {
+      resetPiComponentCacheForTests();
+    }
+  });
+
+  it('preloads current ESM Pi bundle chunks for native snapshot rendering', async () => {
+    resetPiComponentCacheForTests();
+    const packageRoot = path.join(tmp, 'fake-pi-esm-bundle-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist', 'bundle', 'chunks'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', type: 'module', main: 'dist/index.js' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'index.js'), "import 'missing-pi-optional-package';\n");
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'bundle', 'chunks', 'chunk-native.js'), `
+      export class ToolExecutionComponent {
+        constructor(name, _id, args) { this.name = name; this.args = args; }
+        markExecutionStarted() {}
+        setArgsComplete() {}
+        updateResult(result) { this.result = result; }
+        setExpanded(expanded) { this.expanded = expanded; }
+        render() { return ['bundle-native:' + this.name + ':' + this.args.path + ':' + this.result.content[0].text]; }
+      }
+      export function createReadToolDefinition() { return { name: 'read' }; }
+    `);
+    const shimDir = path.join(tmp, 'bin-panel-esm-bundle');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = path.join(shimDir, 'pi');
+    try {
+      await expect(preloadPiComponentsForSubagentRendering()).resolves.toBe(true);
+      const rendered = renderThreadBody({
+        version: 1,
+        source: 'events',
+        items: [{ type: 'tool', name: 'read', status: 'completed', arguments: { path: 'AGENTS.md' }, result: { content: [{ type: 'text', text: 'body' }], isError: false } }],
+      }, {
+        cwd: tmp,
+        tui: { requestRender() {} },
+        visibleWidth: (text: string) => stripAnsi(text).length,
+        truncateToWidth: (text: string, width: number) => text.length > width ? text.slice(0, width) : text,
+      }).join('\n');
+      expect(rendered).toContain('bundle-native:read:AGENTS.md:body');
+      expect(rendered).not.toContain('read completed');
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
+  });
+
   it('hydrates the selected history task snapshot lazily and memoizes rendered structured body', () => {
     resetPiComponentCacheForTests();
     const packageRoot = path.join(tmp, 'fake-pi-panel-memo-package');
@@ -890,6 +1014,30 @@ describe('subagents panel and extension ui', () => {
     expect(body()).toContain('thread line 000');
     panel.handleInput('k');
     expect(body()).toContain('thread line 000');
+  });
+
+  it('handles normalized fullscreen mouse wheel events without delegating scroll to the transcript', () => {
+    const task: SubagentTask = {
+      id: 'subtask_thread_mouse_scroll_normalized',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'running',
+      task: 'mouse scroll normalized long thread',
+      created_at: new Date().toISOString(),
+      thread_snapshot: {
+        version: 1,
+        source: 'events',
+        items: Array.from({ length: 160 }, (_, i) => ({ type: 'status' as const, text: `normalized mouse line ${String(i).padStart(3, '0')}` })),
+      },
+    } as any;
+    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
+    const body = () => panel.render(120).join('\n');
+
+    expect(body()).toContain('normalized mouse line 159');
+    expect(panel.handleMouse({ type: 'wheel', button: 'none', wheelDelta: -1 })).toEqual({ handled: true, render: true });
+    expect(body()).toContain('normalized mouse line 158');
+    expect(body()).not.toContain('normalized mouse line 159');
+    expect(panel.handleMouse({ type: 'press', button: 'left' })).toEqual({ handled: true, focus: true });
   });
 
   it('scrolls selected thread snapshots with SGR mouse wheel input', () => {

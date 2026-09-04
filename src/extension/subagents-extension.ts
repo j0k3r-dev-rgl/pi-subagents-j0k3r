@@ -4,6 +4,7 @@ import { runSubagentModelsCommand } from '../model-profiles-ui.js';
 import { renderSubagentCompletionMessage, sendSubagentCompletionMessage } from '../render/completion-message.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from '../tools.js';
 import { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState } from '../ui/background-widget.js';
+import { preloadPiComponentsForSubagentRendering, registerSubagentExternalToolDefinition } from '../thread-view.js';
 import { showSubagentsPanel } from '../ui/panel-overlay.js';
 
 function currentSessionId(ctx: any): string | undefined {
@@ -14,6 +15,13 @@ function currentSessionId(ctx: any): string | undefined {
 }
 
 export default function subagentsExtension(pi: any): void {
+  const originalRegisterTool = typeof pi.registerTool === 'function' ? pi.registerTool.bind(pi) : undefined;
+  if (originalRegisterTool) {
+    pi.registerTool = (tool: any) => {
+      registerSubagentExternalToolDefinition(tool?.name, tool);
+      return originalRegisterTool(tool);
+    };
+  }
   pi.registerMessageRenderer?.('subagent-completion', renderSubagentCompletionMessage);
   const manager = new SubagentManager(undefined, undefined, (task, cwd) => {
     sendSubagentCompletionMessage(pi, task, cwd);
@@ -42,15 +50,21 @@ export default function subagentsExtension(pi: any): void {
       removeTerminalInputListener = ctx.ui.onTerminalInput((data: string) => {
         if (widgetInputSuspended) return undefined;
         const result = widgetState?.handleTerminalInput(data);
-        if (result?.action?.type === 'open-task' && widgetCtx) void showSubagentsPanel({
-          ctx: widgetCtx,
-          pi,
-          manager,
-          selectedTaskId: result.action.taskId,
-          setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
-          setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
-          setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
-        });
+        if (result?.action?.type === 'open-task' && widgetCtx) {
+          const selectedTaskId = result.action.taskId;
+          void (async () => {
+            await preloadPiComponentsForSubagentRendering();
+            await showSubagentsPanel({
+              ctx: widgetCtx,
+              pi,
+              manager,
+              selectedTaskId,
+              setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+              setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
+              setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
+            });
+          })();
+        }
         return result;
       });
     }
@@ -74,6 +88,7 @@ export default function subagentsExtension(pi: any): void {
   };
 
   pi.on?.('session_start', (_event: unknown, ctx: any) => {
+    void preloadPiComponentsForSubagentRendering();
     clearClaudeBackgroundWidget();
     const cwd = ctx?.cwd ?? process.cwd();
     manager.reconcileOrphanedTasks(cwd);
@@ -92,6 +107,7 @@ export default function subagentsExtension(pi: any): void {
   pi.registerShortcut?.(historyPanelShortcut, {
     description: 'Show subagent history panel',
     handler: async (ctx: any) => {
+      await preloadPiComponentsForSubagentRendering();
       await showSubagentsPanel({
         ctx,
         pi,
@@ -124,14 +140,17 @@ export default function subagentsExtension(pi: any): void {
 
   pi.registerCommand?.('subagents', {
     description: 'Show subagent history panel',
-    handler: async (_args: string, ctx: any) => showSubagentsPanel({
-      ctx: { ...ctx, pi },
-      pi,
-      manager,
-      setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
-      setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
-      setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
-    }),
+    handler: async (_args: string, ctx: any) => {
+      await preloadPiComponentsForSubagentRendering();
+      return showSubagentsPanel({
+        ctx: { ...ctx, pi },
+        pi,
+        manager,
+        setWidgetInputSuspended: (value) => { widgetInputSuspended = value; },
+        setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
+        setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
+      });
+    },
   });
 
   pi.registerCommand?.('subagent-models', {

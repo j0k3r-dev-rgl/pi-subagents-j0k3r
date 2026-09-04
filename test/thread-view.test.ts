@@ -263,7 +263,46 @@ describe('thread view and render', () => {
 
     expect(resolveRegisteredToolDefinition({}, { tools: [memoryTool] }, 'memory_search')).toBe(memoryTool);
     expect(resolveRegisteredToolDefinition({ tools: new Map([['memory_search', memoryTool]]) }, {}, 'memory_search')).toBe(memoryTool);
+    expect(resolveRegisteredToolDefinition({ pi: { getAllTools: () => [memoryTool] } }, {}, 'memory_search')).toBe(memoryTool);
+    expect(resolveRegisteredToolDefinition({}, { getAllTools: () => [memoryTool] }, 'memory_search')).toBe(memoryTool);
     expect(resolveRegisteredToolDefinition({ pi: { getToolDefinition: (name: string) => name === 'read' ? readTool : undefined } }, { tools: [memoryTool] }, 'read')).toBe(readTool);
+  });
+
+  it('rehydrates renderer-bearing extension tool definitions from getAllTools source metadata', () => {
+    resetPiComponentCacheForTests();
+    const source = path.join(tmp, 'external-renderer.ts');
+    fs.writeFileSync(source, `
+      export default function extension(pi) {
+        pi.registerTool({
+          name: 'external_memory',
+          label: 'External Memory',
+          description: 'external memory',
+          parameters: {},
+          renderShell: 'self',
+          renderResult() { return { render: () => ['external-renderer-inherited'], invalidate() {} }; },
+        });
+      }
+    `);
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = '/home/j0k3r/.local/share/mise/installs/node/24.19.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js';
+    try {
+      const definition = resolveRegisteredToolDefinition({
+        pi: {
+          getAllTools: () => [{
+            name: 'external_memory',
+            description: 'metadata only',
+            parameters: {},
+            sourceInfo: { path: source, source: 'external-renderer', scope: 'user', origin: 'package' },
+          }],
+        },
+      }, {}, 'external_memory') as any;
+
+      expect(definition?.renderShell).toBe('self');
+      expect(definition?.renderResult?.({}, {}, {}, {})?.render(80).join('\n')).toContain('external-renderer-inherited');
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
   });
 
   it('renders extension tool rows with Pi ToolExecutionComponent when the context supplies a tool definition', () => {
