@@ -270,9 +270,9 @@ describe('thread view and render', () => {
 
   it('rehydrates renderer-bearing extension tool definitions from getAllTools source metadata', () => {
     resetPiComponentCacheForTests();
-    const source = path.join(tmp, 'external-renderer.ts');
+    const source = path.join(tmp, 'external-renderer.cjs');
     fs.writeFileSync(source, `
-      export default function extension(pi) {
+      module.exports = function extension(pi) {
         pi.registerTool({
           name: 'external_memory',
           label: 'External Memory',
@@ -283,8 +283,18 @@ describe('thread view and render', () => {
         });
       }
     `);
+    const packageRoot = path.join(tmp, 'fake-pi-rehydrate-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, 'node_modules', 'jiti'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    fs.writeFileSync(path.join(packageRoot, 'node_modules', 'jiti', 'package.json'), JSON.stringify({ main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'node_modules', 'jiti', 'index.cjs'), `exports.createJiti = () => require;\n`);
+    const shimDir = path.join(tmp, 'bin-rehydrate');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
     const oldArgv1 = process.argv[1];
-    process.argv[1] = '/home/j0k3r/.local/share/mise/installs/node/24.19.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js';
+    process.argv[1] = path.join(shimDir, 'pi');
     try {
       const definition = resolveRegisteredToolDefinition({
         pi: {
