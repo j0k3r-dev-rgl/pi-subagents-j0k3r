@@ -271,7 +271,7 @@ export class SubagentsHistoryPanel {
     const status = (task: SubagentTask) => task.status === 'completed' ? ok(task.status) : task.status === 'failed' ? err(task.status) : task.status === 'cancelled' ? warn(task.status) : accent(task.status);
 
     const lines: string[] = [];
-    lines.push(line(`${title('subagents')} ${dim('session execution flow')} ${dim(`· ←/→ executions · ↑/↓ scroll · pgup/pgdn · ctrl+o expand · ${this.detailCancelShortcut} cancel active · esc/q close`)}`));
+    lines.push(line(`${title('subagents')} ${dim('flow')} ${dim(`· ←/→ exec · ↑/↓ scroll · pgup/dn · ctrl+o expand · ctrl+t thinking · ${this.detailCancelShortcut} cancel active · esc/q close`)}`));
     lines.push(divider);
 
     const tasks = this.tasks();

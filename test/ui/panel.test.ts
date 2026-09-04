@@ -738,6 +738,24 @@ describe('subagents panel and extension ui', () => {
     }
   });
 
+  it('shows ctrl+t thinking shortcut in the panel header', () => {
+    const task: SubagentTask = {
+      id: 'subtask_header_shortcuts',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'check visible shortcuts',
+      created_at: new Date().toISOString(),
+      thread_snapshot: statusSnapshot('completed'),
+    };
+    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp });
+
+    const header = panel.render(180)[0];
+
+    expect(header).toContain('ctrl+o expand');
+    expect(header).toContain('ctrl+t thinking');
+  });
+
   it('toggles thinking visibility with injected app.thinking.toggle keybindings and ctrl+t', () => {
     resetPiComponentCacheForTests();
     const packageRoot = path.join(tmp, 'fake-pi-panel-thinking-keybindings-package');
