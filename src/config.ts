@@ -161,6 +161,25 @@ function parseCtrlShortcut(value: any, fallback: string): string {
   return /^(?:ctrl\+(?:[a-z]|,)|ctrl\+shift\+[a-z])$/.test(shortcut) ? shortcut : fallback;
 }
 
+const SHORTCUT_MODIFIERS = new Set(['ctrl', 'shift', 'alt', 'super']);
+const SHORTCUT_KEYS = new Set([
+  'escape', 'esc', 'enter', 'return', 'tab', 'space', 'backspace', 'delete', 'insert', 'clear',
+  'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right',
+  '`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/', '!', '@', '#', '$', '%', '^', '&', '*',
+  '(', ')', '_', '+', '|', '~', '{', '}', ':', '<', '>', '?',
+]);
+
+function parseModifiedShortcut(value: any, fallback: string): string {
+  const shortcut = String(value ?? fallback).trim().toLowerCase();
+  const parts = shortcut.split('+');
+  if (parts.length < 2) return fallback;
+  const key = parts.at(-1) ?? '';
+  const modifiers = parts.slice(0, -1);
+  const hasValidModifiers = modifiers.length > 0 && modifiers.every((modifier) => SHORTCUT_MODIFIERS.has(modifier));
+  const hasValidKey = /^[a-z0-9]$/.test(key) || /^f(?:[1-9]|1[0-2])$/.test(key) || SHORTCUT_KEYS.has(key);
+  return hasValidModifiers && hasValidKey ? shortcut : fallback;
+}
+
 function parseDetailShortcut(value: any): string {
   const shortcut = String(value ?? DEFAULT_DETAIL_CANCEL_SHORTCUT).trim().toLowerCase();
   if (/^[a-z]$/.test(shortcut)) return shortcut;
@@ -249,7 +268,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     default_tools: sanitizeTools(Array.isArray(raw.default_tools) ? raw.default_tools.map(String) : DEFAULT_TOOLS),
     session_resources: parseSessionResources(raw.session_resources ?? raw.sessionResources),
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
-    history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
+    history_panel_shortcut: parseModifiedShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
     enable_continue: parseBoolean(raw.enable_continue ?? raw.enableContinue, false),
     debug: parseBoolean(raw.debug, false),

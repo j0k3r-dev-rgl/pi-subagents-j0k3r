@@ -381,10 +381,15 @@ describe('config and workflow loading', () => {
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+p');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
 
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ detailCancelShortcut: 'CTRL+SHIFT+Q' }));
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ history_panel_shortcut: 'ctrl+shift+,', detailCancelShortcut: 'CTRL+SHIFT+Q' }));
+    expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+shift+,');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('ctrl+shift+q');
 
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ historyPanelShortcut: 'alt+p', detailCancelShortcut: 'alt+w' }));
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ historyPanelShortcut: 'shift+alt+,', detailCancelShortcut: 'alt+w' }));
+    expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('shift+alt+,');
+    expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
+
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ historyPanelShortcut: 'plain', detailCancelShortcut: 'alt+w' }));
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+,');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
   });
