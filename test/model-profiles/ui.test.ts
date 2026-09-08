@@ -507,6 +507,40 @@ describe('model profiles ui', () => {
     expect(renderRequests).toBeGreaterThan(0);
   });
 
+  it('modal scrolls and live-filters large provider model lists', () => {
+    const completions: any[] = [];
+    const modal = createSubagentModelProfilesModal({
+      rows: [{ name: 'analyst', description: 'analysis agent', kind: 'subagent', modelLabel: 'default: openai/gpt-5.2', effortLabel: 'default: medium', explicitProfile: {} }],
+      availableModels: Array.from({ length: 15 }, (_, index) => ({
+        provider: 'openai',
+        id: index === 14 ? 'target-model' : `model-${String(index + 1).padStart(2, '0')}`,
+        label: index === 14 ? 'Target Model' : `Model ${String(index + 1).padStart(2, '0')}`,
+      })),
+      done: (result: any) => completions.push(result),
+    });
+
+    modal.handleInput('m');
+    modal.handleInput('down');
+    modal.handleInput('enter');
+    expect(stripAnsi(modal.render(120).join('\n'))).toContain('showing 1-10');
+
+    for (let i = 0; i < 11; i += 1) modal.handleInput('down');
+    const scrolled = stripAnsi(modal.render(120).join('\n'));
+    expect(scrolled).toContain('showing 3-12');
+    expect(scrolled).not.toContain('Model 01');
+    expect(scrolled).toMatch(/›\s+Model 12/);
+
+    for (const char of 'target') modal.handleInput(char);
+    const filtered = stripAnsi(modal.render(120).join('\n'));
+    expect(filtered).toContain('1/15 match');
+    expect(filtered).toContain('search: target');
+    expect(filtered).toMatch(/›\s+Target Model/);
+
+    modal.handleInput('enter');
+    modal.handleInput('s');
+    expect(completions).toEqual([{ action: 'save', dirtyProfiles: { analyst: { model: { provider: 'openai', id: 'target-model' } } } }]);
+  });
+
   it('modal handles main reset hotkeys, effort picker values, nested back, save, and cancel', () => {
     const rows = [
       { name: 'analyst', description: 'analysis agent', kind: 'subagent' as const, modelLabel: 'profile: openai/gpt-5.2', effortLabel: 'profile: medium', effectiveModel: { provider: 'openai', id: 'gpt-5.2' }, effectiveEffort: 'medium' as const, explicitProfile: { model: { provider: 'openai', id: 'gpt-5.2' }, effort: 'medium' as const } },

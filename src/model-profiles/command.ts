@@ -47,6 +47,8 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
   let scrollOffset = 0;
   let view: ModalView = 'main';
   let pickerIndex = 0;
+  let pickerScrollOffset = 0;
+  let modelSearch = '';
   let selectedProvider: string | undefined;
   let dirtyProfiles: SubagentModelProfiles = {};
   let completed = false;
@@ -68,9 +70,15 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, rows.length - 1)));
   };
 
+  const resetPickerPosition = () => {
+    pickerIndex = 0;
+    pickerScrollOffset = 0;
+  };
+
   const openPicker = (nextView: ModalView) => {
     view = nextView;
-    pickerIndex = 0;
+    resetPickerPosition();
+    modelSearch = '';
     selectedProvider = undefined;
   };
 
@@ -166,17 +174,45 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     return frameModal('Choose model provider', lines, width);
   };
 
+  const filteredProviderModels = (): any[] => {
+    const models = selectedProvider ? (availableByProvider[selectedProvider] ?? []) : [];
+    const query = modelSearch.trim().toLowerCase();
+    if (!query) return models;
+    return models.filter((model) => `${model.label} ${model.provider}/${model.id}`.toLowerCase().includes(query));
+  };
+
+  const modelPickerVisibleRows = (): number => 10;
+
+  const clampPickerScroll = (length: number) => {
+    pickerIndex = Math.min(Math.max(pickerIndex, 0), Math.max(0, length - 1));
+    if (pickerIndex < pickerScrollOffset) pickerScrollOffset = pickerIndex;
+    const visibleRows = modelPickerVisibleRows();
+    if (pickerIndex >= pickerScrollOffset + visibleRows) pickerScrollOffset = pickerIndex - visibleRows + 1;
+    pickerScrollOffset = Math.max(0, Math.min(pickerScrollOffset, Math.max(0, length - 1)));
+  };
+
   const renderModelPicker = (width: number): string[] => {
     const row = selectedRow();
-    const models = selectedProvider ? (availableByProvider[selectedProvider] ?? []) : [];
+    const allModels = selectedProvider ? (availableByProvider[selectedProvider] ?? []) : [];
+    const models = filteredProviderModels();
+    clampPickerScroll(models.length);
+    const visibleRows = modelPickerVisibleRows();
+    const visibleModels = models.slice(pickerScrollOffset, pickerScrollOffset + visibleRows);
+    const rangeEnd = Math.min(models.length, pickerScrollOffset + visibleRows);
+    const countText = modelSearch ? `${models.length}/${allModels.length} match${models.length === 1 ? '' : 'es'}` : `${models.length} model${models.length === 1 ? '' : 's'}`;
     const lines = [
       `Select ${selectedProvider ?? ''} model for ${row?.name ?? '(none)'}`,
-      `provider: ${selectedProvider ?? '(none)'}`,
-      'choose model · enter: select · esc/q: back',
+      `provider: ${selectedProvider ?? '(none)'} · ${countText}${models.length > visibleRows ? ` · showing ${pickerScrollOffset + 1}-${rangeEnd}` : ''}`,
+      `search: ${modelSearch || '(type to filter)'}`,
+      '↑/↓/j/k move · type search · backspace clear · enter select · esc back',
       '',
     ];
-    if (!models.length) lines.push('No models available for this provider.');
-    for (const [index, model] of models.entries()) lines.push(`${index === pickerIndex ? '›' : ' '} ${model.label} (${model.provider}/${model.id})`);
+    if (!allModels.length) lines.push('No models available for this provider.');
+    else if (!models.length) lines.push('No models match the current search.');
+    for (const [offset, model] of visibleModels.entries()) {
+      const index = pickerScrollOffset + offset;
+      lines.push(`${index === pickerIndex ? '›' : ' '} ${model.label} (${model.provider}/${model.id})`);
+    }
     return frameModal('Choose model', lines, width);
   };
 
@@ -196,10 +232,18 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     const length = view === 'model-provider'
       ? 1 + providerNames.length
       : view === 'model-model'
-        ? (selectedProvider ? (availableByProvider[selectedProvider] ?? []).length : 0)
+        ? filteredProviderModels().length
         : 1 + EFFORT_CHOICES.filter((choice) => choice !== 'inherit').length;
     pickerIndex = Math.min(Math.max(pickerIndex + delta, 0), Math.max(0, length - 1));
+    if (view === 'model-model') clampPickerScroll(length);
   };
+
+  const updateModelSearch = (nextSearch: string) => {
+    modelSearch = nextSearch;
+    resetPickerPosition();
+  };
+
+  const isPrintableSearchInput = (key: string): boolean => key.length === 1 && key >= ' ' && key !== '\u007f';
 
   const chooseProvider = () => {
     if (pickerIndex === 0) {
@@ -208,12 +252,13 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
       return;
     }
     selectedProvider = providerNames[pickerIndex - 1];
-    pickerIndex = 0;
+    resetPickerPosition();
+    modelSearch = '';
     view = 'model-model';
   };
 
   const chooseModel = () => {
-    const model = selectedProvider ? (availableByProvider[selectedProvider] ?? [])[pickerIndex] : undefined;
+    const model = filteredProviderModels()[pickerIndex];
     if (model) applyEdit({ model: { provider: model.provider, id: model.id } });
     view = 'main';
   };
@@ -241,16 +286,23 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
       if (completed) return;
       const key = normalizeModalKey(data);
       if (view !== 'main') {
-        if (key === 'esc' || key === 'q') view = 'main';
+        if (key === 'esc' || (key === 'q' && view !== 'model-model')) view = 'main';
+        else if (view === 'model-model' && (key === '\u007f' || key === '\b')) updateModelSearch(modelSearch.slice(0, -1));
+        else if (view === 'model-model' && key === '\u0015') updateModelSearch('');
+        else if (view === 'model-model' && modelSearch && isPrintableSearchInput(key)) updateModelSearch(`${modelSearch}${key}`);
         else if (key === 'up' || key === 'k') movePicker(-1);
         else if (key === 'down' || key === 'j') movePicker(1);
-        else if (key === 'home' || key === 'g') pickerIndex = 0;
+        else if (key === 'home' || key === 'g') {
+          pickerIndex = 0;
+          if (view === 'model-model') clampPickerScroll(filteredProviderModels().length);
+        }
         else if (key === 'end' || key === 'G') movePicker(Number.MAX_SAFE_INTEGER);
         else if (key === 'enter') {
           if (view === 'model-provider') chooseProvider();
           else if (view === 'model-model') chooseModel();
           else chooseEffort();
         }
+        else if (view === 'model-model' && isPrintableSearchInput(key)) updateModelSearch(`${modelSearch}${key}`);
         requestRender();
         return;
       }
