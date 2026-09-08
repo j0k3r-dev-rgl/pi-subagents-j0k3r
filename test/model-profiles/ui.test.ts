@@ -530,8 +530,21 @@ describe('model profiles ui', () => {
     expect(scrolled).not.toContain('Model 01');
     expect(scrolled).toMatch(/›\s+Model 12/);
 
+    for (const char of 'model') modal.handleInput(char);
+    modal.handleInput('\u001b[B');
+    modal.handleInput('\u001b[A');
+    let filtered = stripAnsi(modal.render(120).join('\n'));
+    expect(filtered).toContain('15/15 matches');
+    expect(filtered).toContain('search: model');
+    expect(filtered).toMatch(/›\s+Model 01/);
+
+    modal.handleInput('\u007f');
+    modal.handleInput('\u007f');
+    modal.handleInput('\u007f');
+    modal.handleInput('\u007f');
+    modal.handleInput('\u007f');
     for (const char of 'target') modal.handleInput(char);
-    const filtered = stripAnsi(modal.render(120).join('\n'));
+    filtered = stripAnsi(modal.render(120).join('\n'));
     expect(filtered).toContain('1/15 match');
     expect(filtered).toContain('search: target');
     expect(filtered).toMatch(/›\s+Target Model/);

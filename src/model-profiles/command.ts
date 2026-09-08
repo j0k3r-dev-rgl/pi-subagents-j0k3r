@@ -289,9 +289,9 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
         if (key === 'esc' || (key === 'q' && view !== 'model-model')) view = 'main';
         else if (view === 'model-model' && (key === '\u007f' || key === '\b')) updateModelSearch(modelSearch.slice(0, -1));
         else if (view === 'model-model' && key === '\u0015') updateModelSearch('');
-        else if (view === 'model-model' && modelSearch && isPrintableSearchInput(key)) updateModelSearch(`${modelSearch}${key}`);
         else if (key === 'up' || key === 'k') movePicker(-1);
         else if (key === 'down' || key === 'j') movePicker(1);
+        else if (view === 'model-model' && modelSearch && isPrintableSearchInput(key)) updateModelSearch(`${modelSearch}${key}`);
         else if (key === 'home' || key === 'g') {
           pickerIndex = 0;
           if (view === 'model-model') clampPickerScroll(filteredProviderModels().length);

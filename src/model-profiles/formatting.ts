@@ -72,10 +72,10 @@ export function pendingLabel(count: number): string {
 export function normalizeModalKey(data: string): string {
   if (data === '\r' || data === '\n') return 'enter';
   if (data === '\u001b') return 'esc';
-  if (data === '\u001b[A') return 'up';
-  if (data === '\u001b[B') return 'down';
-  if (data === '\u001b[H') return 'home';
-  if (data === '\u001b[F') return 'end';
+  if (data === '\u001b[A' || data === '\u001bOA') return 'up';
+  if (data === '\u001b[B' || data === '\u001bOB') return 'down';
+  if (data === '\u001b[H' || data === '\u001b[1~' || data === '\u001bOH') return 'home';
+  if (data === '\u001b[F' || data === '\u001b[4~' || data === '\u001bOF') return 'end';
   return data;
 }
 
