@@ -49,11 +49,12 @@ describe('subagent_list_tasks tool', () => {
     const collapsed = listTool.renderResult(result, { expanded: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n');
     expect(collapsed).toContain('Listed 1 subagent task');
     expect(collapsed).toContain('ctrl+o to expand');
-    expect(collapsed).toContain('agent: analyst');
+    expect(collapsed).toContain('subagent: analyst');
     expect(collapsed).not.toContain('to=functions.memory_get');
+    expect(collapsed).not.toContain('id: subtask_');
 
     const expanded = listTool.renderResult(result, { expanded: true }, { fg: (_name: string, text: string) => text }).render(160).join('\n');
-    expect(expanded).toContain('agent: analyst');
+    expect(expanded).toContain('subagent: analyst');
     expect(expanded).toContain('preview: collapsed');
     expect(expanded).not.toContain('to=functions.memory_get');
   });

@@ -1,5 +1,23 @@
 import { isValidThreadSnapshot, renderThreadBody } from '../thread-view.js';
 import type { SubagentTask, SubagentThreadRenderContext, SubagentThreadSnapshot, UsageStats } from '../types.js';
+import { formatTaskLabel } from '../render/tools/formatting.js';
+import {
+  ARCH_ICON,
+  BOX_CHARS,
+  CYAN,
+  CYBER_SEPARATOR,
+  VIOLET,
+  electricBorder,
+  themeAccent,
+  themeBold,
+  themeDim,
+  themeError,
+  themeFg,
+  themeStatus,
+  themeSuccess,
+  themeTitle,
+  themeWarning,
+} from './theme.js';
 
 function clip(text: string | undefined, limit: number): string {
   if (!text) return '';
@@ -80,6 +98,28 @@ function mouseWheelDelta(data: string): -1 | 1 | undefined {
   return (button & 1) === 0 ? -1 : 1;
 }
 
+function isMouseClickInput(data: string): { isClick: boolean; row?: number } {
+  // SGR mouse tracking: \u001b[<button;col;rowM
+  const sgr = data.match(/^\u001b\[<(\d+);(\d+);(\d+)M$/);
+  if (sgr) {
+    const button = Number(sgr[1]);
+    const row = Number(sgr[3]) - 1; // 1-based row in terminal to 0-based
+    if (button === 0) return { isClick: true, row };
+  }
+  const urxvt = data.match(/^\u001b\[(\d+);(\d+);(\d+)M$/);
+  if (urxvt) {
+    const button = Number(urxvt[1]);
+    const row = Number(urxvt[3]) - 1;
+    if (button === 0) return { isClick: true, row };
+  }
+  if (data.startsWith('\u001b[M') && data.length >= 6) {
+    const button = data.charCodeAt(3) - 32;
+    const row = data.charCodeAt(5) - 32 - 1;
+    if ((button & 64) === 0 && (button & 3) === 0) return { isClick: true, row };
+  }
+  return { isClick: false };
+}
+
 function normalizeTerminalErrorText(text: string | undefined): string {
   return text?.replace(/\s+/g, ' ').trim().toLowerCase() ?? '';
 }
@@ -108,7 +148,8 @@ export class SubagentsHistoryPanel {
   private toolOutputExpanded = false;
   private hideThinkingBlock = false;
   private hydratedTasks = new Map<string, { signature: string; task: SubagentTask }>();
-  private bodyCache = new Map<string, string[]>();
+  private bodyCache = new Map<string, Array<{ text: string; taskId?: string }>>();
+  private rowTaskMap = new Map<number, string>();
   private lastRenderDebugState?: {
     configuredMaxLines: number;
     renderWidth: number;
@@ -116,6 +157,7 @@ export class SubagentsHistoryPanel {
     bodyHeight: number;
     maxVisibleWidth: number;
     widthViolationCount: number;
+    clickableRowCount?: number;
   };
 
   constructor(
@@ -134,17 +176,47 @@ export class SubagentsHistoryPanel {
     private displayOptions: SubagentsHistoryPanelDisplayOptions = {},
   ) {}
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.bodyCache.clear();
+    this.hydratedTasks.clear();
+    this.rowTaskMap.clear();
+  }
 
-  handleMouse(event: { type?: string; button?: string; wheelDelta?: number }): { handled: true; focus?: boolean; render?: boolean } | undefined {
+  handleMouse(event: {
+    type?: string;
+    button?: string;
+    row?: number;
+    y?: number;
+    x?: number;
+    col?: number;
+    wheelDelta?: number;
+  }): { handled: true; focus?: boolean; render?: boolean } | undefined {
     if (event.type === 'wheel') {
       const delta = Number(event.wheelDelta ?? 0);
+      if (!Number.isFinite(delta) || delta === 0) return undefined;
       if (delta < 0) this.scrollBy(-1);
-      else if (delta > 0) this.scrollBy(1);
+      else this.scrollBy(1);
       return { handled: true, render: true };
     }
-    if (event.type === 'press' || event.type === 'click') return { handled: true, focus: true };
-    return { handled: true };
+    const isLeftClick = event.type === 'press' || event.type === 'click' || (!event.type && event.button === 'left');
+    if (!isLeftClick) return undefined;
+
+    const row = event.row ?? event.y;
+    if (typeof row === 'number' && Number.isFinite(row)) {
+      const targetTaskId = this.rowTaskMap.get(row);
+      if (targetTaskId) {
+        const tasks = this.tasks();
+        const targetIndex = tasks.findIndex((t) => t.id === targetTaskId);
+        if (targetIndex >= 0) {
+          this.selected = targetIndex;
+          this.scroll = 0;
+          this.followTail = true;
+          return { handled: true, focus: true, render: true };
+        }
+      }
+      return { handled: true, focus: true };
+    }
+    return undefined;
   }
 
   handleInput(data: string): void {
@@ -172,6 +244,11 @@ export class SubagentsHistoryPanel {
     }
     if (wheel === 1) {
       this.scrollBy(1);
+      return;
+    }
+    const mouseClick = isMouseClickInput(data);
+    if (mouseClick.isClick && typeof mouseClick.row === 'number') {
+      this.handleMouse({ type: 'click', row: mouseClick.row });
       return;
     }
     if (this.matchesKey(data, 'right')) {
@@ -235,6 +312,7 @@ export class SubagentsHistoryPanel {
     bodyHeight?: number;
     maxVisibleWidth?: number;
     widthViolationCount?: number;
+    clickableRowCount?: number;
   } {
     const tasks = this.tasks();
     const task = tasks[this.selected];
@@ -251,6 +329,7 @@ export class SubagentsHistoryPanel {
       bodyHeight: this.lastRenderDebugState?.bodyHeight,
       maxVisibleWidth: this.lastRenderDebugState?.maxVisibleWidth,
       widthViolationCount: this.lastRenderDebugState?.widthViolationCount,
+      clickableRowCount: this.rowTaskMap.size,
     };
   }
 
@@ -260,19 +339,23 @@ export class SubagentsHistoryPanel {
     const configuredMaxLines = typeof this.maxLinesProvider === 'function' ? this.maxLinesProvider() : this.maxLinesProvider;
     const maxLines = Math.max(12, Math.floor(Number.isFinite(configuredMaxLines) ? configuredMaxLines : 42));
     const th = this.theme;
-    const accent = (s: string) => th?.fg?.('accent', s) ?? s;
-    const dim = (s: string) => th?.fg?.('dim', s) ?? s;
-    const warn = (s: string) => th?.fg?.('warning', s) ?? s;
-    const ok = (s: string) => th?.fg?.('success', s) ?? s;
-    const err = (s: string) => th?.fg?.('error', s) ?? s;
-    const title = (s: string) => th?.fg?.('toolTitle', th?.bold?.(s) ?? s) ?? s;
+    const accent = (s: string) => themeAccent(th, s);
+    const dim = (s: string) => themeDim(th, s);
+    const warn = (s: string) => themeWarning(th, s);
+    const ok = (s: string) => themeSuccess(th, s);
+    const err = (s: string) => themeError(th, s);
+    const title = (s: string) => themeTitle(th, s);
     const line = (s = '') => fitsWidth(s, bodyWidth, this.visibleWidth) ? s : this.truncateToWidth(s, bodyWidth);
-    const divider = dim('─'.repeat(bodyWidth));
-    const status = (task: SubagentTask) => task.status === 'completed' ? ok(task.status) : task.status === 'failed' ? err(task.status) : task.status === 'cancelled' ? warn(task.status) : accent(task.status);
+    const border = (text: string) => themeFg(th, 'accent', text, CYAN);
+    const divider = line(border(BOX_CHARS.horizontal.repeat(bodyWidth)));
+    const sep = ` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `;
+    const status = (task: SubagentTask) => themeStatus(th, task.status);
 
     const lines: string[] = [];
-    lines.push(line(`${title('subagents')} ${dim('flow')} ${dim(`· ←/→ exec · ↑/↓ scroll · pgup/dn · ctrl+o expand · ctrl+t thinking · ${this.detailCancelShortcut} cancel active · esc/q close`)}`));
-    lines.push(divider);
+    const archPrefix = themeFg(th, 'accent', ARCH_ICON, CYAN);
+    lines.push(line(`${archPrefix} ${title('subagents')} ${dim('flow')} ${dim(`· ←/→ exec · ↑/↓ scroll · pgup/dn · ctrl+o expand · ctrl+t thinking · ${this.detailCancelShortcut} cancel active · esc/q close`)}`));
+    const topFrame = line(border(BOX_CHARS.topLeft + BOX_CHARS.horizontal.repeat(Math.max(0, bodyWidth - 2)) + BOX_CHARS.topRight));
+    lines.push(topFrame);
 
     const tasks = this.tasks();
     if (this.initialSelectedTaskId) {
@@ -315,31 +398,45 @@ export class SubagentsHistoryPanel {
     const timeoutHint = timeout ? ` ${dim(`(timeout ${timeout})`)}` : '';
     const stallHint = stallTimeout ? ` ${dim(`(stall ${stallTimeout})`)}` : '';
     const lastActivity = [task.last_activity ?? 'n/a', task.last_activity_at ? dim(task.last_activity_at) : ''].filter(Boolean).join(' ');
-    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}  ${dim('agent:')} ${accent(task.agent)}  ${dim('status:')} ${status(task)}  ${dim('attempt:')} ${accent(String(task.attempt ?? 1))}  ${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
-    lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}  ${dim('id:')} ${task.id}  ${dim('duration:')} ${fmtDuration(task)}${timeoutHint}`));
+    const displayName = task.display_name?.trim();
+    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}${sep}${dim('subagent:')} ${accent(task.agent)}${sep}${dim('status:')} ${status(task)}${sep}${dim('attempt:')} ${accent(String(task.attempt ?? 1))}${sep}${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
+    lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}${displayName ? `${sep}${dim('name:')} ${accent(displayName)}` : ''}${sep}${dim('duration:')} ${fmtDuration(task)}${timeoutHint}`));
     if (usage) lines.push(line(`${dim('usage:')} ${usage}`));
     lines.push(line(`${dim('last:')} ${lastActivity}${stallHint}`));
     lines.push(line(`${dim('task:')} ${clip(task.task, bodyWidth - 6)}`));
     lines.push(this.taskStrip(bodyWidth));
     lines.push(divider);
 
+    const headerCount = lines.length;
     const structuredBody = isValidThreadSnapshot(task.thread_snapshot);
-    const bodyLines = this.bodyLinesFor(task, bodyWidth);
+    const bodyEntries = this.bodyEntriesFor(task, bodyWidth);
     // Pi components already return width-bounded visual lines. Do not re-wrap or
     // restyle structured thread snapshots, otherwise component spacing, borders,
     // ANSI styling, and tool differentiation collapse into plain text.
-    const wrapped = structuredBody ? bodyLines : this.wrap(bodyLines.join('\n'), bodyWidth);
-    const bodyHeight = Math.max(5, maxLines - lines.length - 2);
-    const maxScroll = Math.max(0, wrapped.length - bodyHeight);
+    const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, bodyWidth);
+    const bodyHeight = Math.max(5, maxLines - headerCount - 2);
+    const maxScroll = Math.max(0, wrappedEntries.length - bodyHeight);
     if (this.followTail || (this.lastMaxScroll > 0 && this.scroll >= this.lastMaxScroll)) this.scroll = maxScroll;
     if (this.scroll > maxScroll) this.scroll = maxScroll;
     this.lastMaxScroll = maxScroll;
-    const visible = wrapped.slice(this.scroll, this.scroll + bodyHeight);
-    for (const raw of visible) lines.push(structuredBody ? line(raw) : this.renderFlowLine(raw, bodyWidth));
+    const visible = wrappedEntries.slice(this.scroll, this.scroll + bodyHeight);
+
+    this.rowTaskMap.clear();
+    for (let i = 0; i < visible.length; i++) {
+      const entry = visible[i]!;
+      const terminalRow = headerCount + i;
+      if (entry.taskId) {
+        this.rowTaskMap.set(terminalRow, entry.taskId);
+      }
+      lines.push(structuredBody ? line(entry.text) : this.renderFlowLine(entry.text, bodyWidth));
+    }
 
     while (lines.length < maxLines - 1) lines.push('');
-    const position = wrapped.length > bodyHeight ? ` ${this.scroll + 1}-${Math.min(wrapped.length, this.scroll + bodyHeight)}/${wrapped.length}` : '';
-    lines.push(line(`${dim('─'.repeat(Math.max(0, bodyWidth - position.length)))}${dim(position)}`));
+    const position = wrappedEntries.length > bodyHeight ? ` ${this.scroll + 1}-${Math.min(wrappedEntries.length, this.scroll + bodyHeight)}/${wrappedEntries.length} ` : '';
+    const bottomFrame = bodyWidth >= position.length + 2
+      ? line(`${border(BOX_CHARS.bottomLeft + BOX_CHARS.horizontal.repeat(Math.max(0, bodyWidth - position.length - 2)))}${dim(position)}${border(BOX_CHARS.bottomRight)}`)
+      : line(`${dim('─'.repeat(Math.max(0, bodyWidth - position.length)))}${dim(position)}`);
+    lines.push(bottomFrame);
     const lineWidths = lines.map((entry) => {
       try {
         return this.visibleWidth(entry);
@@ -410,8 +507,12 @@ export class SubagentsHistoryPanel {
       return th?.fg?.('dim', text) ?? text;
     }
     if (this.isToolLikeLine(raw)) {
-      const padded = this.padToWidth(raw, width);
-      return th?.bg?.('toolPendingBg', th?.fg?.('toolTitle', padded) ?? padded) ?? padded;
+      const border = (t: string) => themeFg(th, 'accent', t, CYAN);
+      const prefix = border(`${BOX_CHARS.vertical} `);
+      const maxTextWidth = Math.max(0, width - 2);
+      const clipped = this.truncateToWidth(raw, maxTextWidth);
+      const text = th?.fg?.('toolTitle', clipped) ?? clipped;
+      return `${prefix}${text}`;
     }
     if (raw.startsWith('done') || raw.startsWith('completed')) {
       const clipped = this.truncateToWidth(raw, width);
@@ -422,9 +523,16 @@ export class SubagentsHistoryPanel {
       return th?.fg?.('error', clipped) ?? clipped;
     }
     if (raw.startsWith('# ') || raw.startsWith('## ') || raw.startsWith('### ')) {
-      const clipped = this.truncateToWidth(raw, width);
-      const text = th?.bold?.(clipped) ?? clipped;
-      return th?.fg?.('mdHeading', text) ?? text;
+      const border = (t: string) => themeFg(th, 'accent', t, CYAN);
+      const titleText = raw.replace(/^#+\s*/, '');
+      const heading = th?.bold?.(th?.fg?.('mdHeading', titleText) ?? titleText) ?? titleText;
+      const leftFrame = `${border(BOX_CHARS.topLeft + BOX_CHARS.horizontal + ' ')}${heading} `;
+      const leftVisWidth = this.visibleWidth(leftFrame);
+      const rightCorner = border(BOX_CHARS.topRight);
+      const rightVisWidth = this.visibleWidth(rightCorner);
+      const filler = Math.max(0, width - leftVisWidth - rightVisWidth);
+      const framed = `${leftFrame}${border(BOX_CHARS.horizontal.repeat(filler))}${rightCorner}`;
+      return fitsWidth(framed, width, this.visibleWidth) ? framed : this.truncateToWidth(framed, width);
     }
     if (raw.startsWith('  ')) {
       const clipped = this.truncateToWidth(raw, width);
@@ -452,7 +560,136 @@ export class SubagentsHistoryPanel {
     return [this.taskSignature(task), width, this.toolOutputExpanded ? 'expanded' : 'collapsed', this.hideThinkingBlock ? 'thinking-hidden' : 'thinking-visible'].join('|');
   }
 
-  private bodyLinesFor(task: SubagentTask, width: number): string[] {
+  private resolveTaskIdFromSnapshotItem(item: any, tasks: SubagentTask[]): string | undefined {
+    if (!item) return undefined;
+    const directId = item.taskId ?? item.task_id ?? item.subagentTaskId ?? item.subtaskId;
+    if (typeof directId === 'string' && directId.trim()) return directId.trim();
+
+    const details = item.result?.details;
+    if (details) {
+      if (typeof details.task?.id === 'string' && details.task.id.trim()) return details.task.id.trim();
+      if (typeof details.task_id === 'string' && details.task_id.trim()) return details.task_id.trim();
+      if (typeof details.taskId === 'string' && details.taskId.trim()) return details.taskId.trim();
+      if (Array.isArray(details.tasks) && details.tasks[0]?.id) return String(details.tasks[0].id).trim();
+      if (Array.isArray(details.task_ids) && details.task_ids[0]) return String(details.task_ids[0]).trim();
+    }
+
+    const resultTaskId = item.result?.task_id ?? item.result?.taskId ?? item.result?.task?.id;
+    if (typeof resultTaskId === 'string' && resultTaskId.trim()) return resultTaskId.trim();
+
+    const argsTaskId = item.arguments?.task_id ?? item.arguments?.taskId ?? item.arguments?.task?.id;
+    if (typeof argsTaskId === 'string' && argsTaskId.trim()) return argsTaskId.trim();
+
+    const toolName = typeof item.name === 'string' ? item.name : '';
+    const isSubagentTool = toolName === 'subagent_run' || toolName === 'subagent_continue' || toolName === 'subagent' || toolName.startsWith('subagent');
+
+    if (isSubagentTool || item.type === 'subagent') {
+      const agentCandidate = item.arguments?.agent ?? item.arguments?.name;
+      if (typeof agentCandidate === 'string' && agentCandidate.trim()) {
+        const found = tasks.find((t) => t.id === agentCandidate || t.agent === agentCandidate || t.display_name === agentCandidate);
+        if (found) return found.id;
+      }
+      const taskCandidate = item.arguments?.task;
+      if (typeof taskCandidate === 'string' && taskCandidate.trim()) {
+        const found = tasks.find((t) => t.task === taskCandidate || t.display_name === taskCandidate);
+        if (found) return found.id;
+      }
+    }
+
+    return undefined;
+  }
+
+  private resolveTaskIdFromFlowLine(line: string, tasks: SubagentTask[]): { cleanLine: string; taskId?: string } {
+    const trimmed = line.trim();
+    if (!trimmed) return { cleanLine: line };
+
+    if (
+      trimmed.startsWith('subagent:') ||
+      trimmed.startsWith('model:') ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('Preparing for response') ||
+      trimmed.startsWith('done') ||
+      trimmed.startsWith('completed') ||
+      trimmed.startsWith('failed') ||
+      trimmed.startsWith('error')
+    ) {
+      return { cleanLine: line };
+    }
+
+    let cleanLine = line;
+    let taskId: string | undefined;
+
+    const rawIdMatch = line.match(/\b(subtask_[a-zA-Z0-9_-]+)\b/);
+    if (rawIdMatch) {
+      taskId = rawIdMatch[1];
+      cleanLine = cleanLine
+        .replace(/\s*[\(\[]?subtask_[a-zA-Z0-9_-]+[\)\]]?/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trimEnd();
+    }
+
+    if (!taskId) {
+      if (trimmed === 'main') {
+        const found = tasks.find((t) => t.id === 'main' || t.agent === 'main');
+        if (found) taskId = found.id;
+      }
+
+      const subagentMatch = trimmed.match(/^subagent\s+([^\s:]+)/);
+      if (subagentMatch) {
+        const agentName = subagentMatch[1]!;
+        const found = tasks.find((t) => t.id === agentName || t.agent === agentName || t.display_name === agentName);
+        if (found) taskId = found.id;
+      }
+
+      const bulletMatch = trimmed.match(/^(?:󰣇|●|○)\s+([^\s:]+)/);
+      if (bulletMatch) {
+        const agentName = bulletMatch[1]!;
+        const found = tasks.find((t) => t.id === agentName || t.agent === agentName || t.display_name === agentName);
+        if (found) taskId = found.id;
+      }
+
+      if (!taskId) {
+        for (const t of tasks) {
+          if (t.agent && (trimmed.startsWith(`${t.agent} `) || trimmed.startsWith(`${t.agent}:`) || trimmed === t.agent)) {
+            taskId = t.id;
+            break;
+          }
+          if (t.display_name && (trimmed.startsWith(`${t.display_name} `) || trimmed.startsWith(`${t.display_name}:`) || trimmed === t.display_name)) {
+            taskId = t.id;
+            break;
+          }
+        }
+      }
+    }
+
+    return { cleanLine, taskId };
+  }
+
+  private wrapWithTaskIds(
+    entries: Array<{ text: string; taskId?: string }>,
+    width: number,
+  ): Array<{ text: string; taskId?: string }> {
+    const out: Array<{ text: string; taskId?: string }> = [];
+    for (const entry of entries) {
+      const wrappedTexts = this.wrap(entry.text, width);
+      for (const text of wrappedTexts) {
+        out.push({ text, taskId: entry.taskId });
+      }
+    }
+    return out;
+  }
+
+  private executionFlowEntriesFor(task: SubagentTask): Array<{ text: string; taskId?: string }> {
+    const rawFlow = this.executionFlowFor(task);
+    const rawLines = rawFlow.split('\n');
+    const tasks = this.tasks();
+    return rawLines.map((line) => {
+      const { cleanLine, taskId } = this.resolveTaskIdFromFlowLine(line, tasks);
+      return { text: cleanLine, taskId };
+    });
+  }
+
+  private bodyEntriesFor(task: SubagentTask, width: number): Array<{ text: string; taskId?: string }> {
     const activeSnapshot = isValidThreadSnapshot(task.thread_snapshot) ? task.thread_snapshot : undefined;
     const allowCache = !snapshotHasActiveTools(activeSnapshot);
     const cacheKey = this.bodyCacheKey(task, width);
@@ -460,9 +697,9 @@ export class SubagentsHistoryPanel {
       const cached = this.bodyCache.get(cacheKey);
       if (cached) return cached;
     }
-    let lines: string[];
+    let entries: Array<{ text: string; taskId?: string }>;
     if (activeSnapshot) {
-      const rendered = renderThreadBody(activeSnapshot, {
+      const context = {
         ...this.renderContext,
         theme: this.renderContext.theme ?? this.theme,
         cwd: this.renderContext.cwd ?? process.cwd(),
@@ -472,39 +709,76 @@ export class SubagentsHistoryPanel {
         renderWidth: width,
         toolOutputExpanded: this.toolOutputExpanded,
         hideThinkingBlock: this.hideThinkingBlock,
-      });
-      lines = rendered.length ? rendered : [''];
+      };
+      const rendered = renderThreadBody(activeSnapshot, context);
+      const rawLines = rendered.length ? rendered : [''];
+      const knownTasks = this.tasks();
+
+      if (activeSnapshot.items.length <= 1) {
+        const taskId = activeSnapshot.items[0]
+          ? this.resolveTaskIdFromSnapshotItem(activeSnapshot.items[0], knownTasks)
+          : undefined;
+        entries = rawLines.map((text) => {
+          const resolved = taskId ? { cleanLine: text, taskId } : this.resolveTaskIdFromFlowLine(text, knownTasks);
+          return { text: resolved.cleanLine, taskId: resolved.taskId };
+        });
+      } else {
+        const itemSlices: Array<{ lines: string[]; taskId?: string }> = [];
+        for (const item of activeSnapshot.items) {
+          const itemLines = renderThreadBody({ ...activeSnapshot, items: [item] }, context);
+          const taskId = this.resolveTaskIdFromSnapshotItem(item, knownTasks);
+          itemSlices.push({ lines: itemLines, taskId });
+        }
+        const flatLines = itemSlices.flatMap((s) => s.lines);
+        if (flatLines.length === rawLines.length && flatLines.join('\n') === rawLines.join('\n')) {
+          entries = itemSlices.flatMap((s) => s.lines.map((text) => {
+            const resolved = s.taskId ? { cleanLine: text, taskId: s.taskId } : this.resolveTaskIdFromFlowLine(text, knownTasks);
+            return { text: resolved.cleanLine, taskId: resolved.taskId };
+          }));
+        } else {
+          entries = rawLines.map((lineText) => {
+            const resolved = this.resolveTaskIdFromFlowLine(lineText, knownTasks);
+            return { text: resolved.cleanLine, taskId: resolved.taskId };
+          });
+        }
+      }
+
       if ((task.status === 'failed' || task.status === 'cancelled') && task.error && !hasEquivalentSnapshotError(activeSnapshot, task.error)) {
-        lines = [...lines, '', '# error', task.error];
+        entries.push({ text: '' }, { text: '# error' }, { text: task.error });
       }
     } else {
-      lines = [this.executionFlowFor(task)];
+      entries = this.executionFlowEntriesFor(task);
     }
-    if (!allowCache) return lines;
-    this.bodyCache.set(cacheKey, lines);
+    if (!allowCache) return entries;
+    this.bodyCache.set(cacheKey, entries);
     if (this.bodyCache.size > 50) {
       const oldest = this.bodyCache.keys().next().value;
       if (oldest !== undefined) this.bodyCache.delete(oldest);
     }
-    return lines;
+    return entries;
+  }
+
+  private bodyLinesFor(task: SubagentTask, width: number): string[] {
+    return this.bodyEntriesFor(task, width).map((entry) => entry.text);
   }
 
   private executionFlowFor(task: SubagentTask): string {
     const usage = formatUsage(task.usage);
+    const hasResp = typeof task.result === 'string' && task.result.trim().length > 0;
     const parts = [
-      `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · effort: ${task.effort ?? 'default/current'}`,
+      `subagent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · effort: ${task.effort ?? 'default/current'}`,
       `model: ${task.model ?? 'default/current'}${usage ? ` · usage: ${usage}` : ''}`,
       '',
-      `Preparing for response`,
-      '',
+      hasResp ? 'Preparing for response' : undefined,
+      hasResp ? '' : undefined,
       task.prompt ? ['# delegated task', this.extractPromptTail(task.prompt)].join('\n') : ['# delegated task', task.task].join('\n'),
       task.context ? ['', '# context', task.context].join('\n') : undefined,
       task.continuation_prompt ? ['', '# continuation prompt', task.continuation_prompt].join('\n') : undefined,
       usage ? ['', '# usage', usage].join('\n') : undefined,
       task.transcript ? ['', '# execution', this.cleanTranscript(task.transcript)].join('\n') : undefined,
       task.error ? ['', '# error', task.error].join('\n') : undefined,
-      task.result ? ['', '# response sent to orchestrator', task.result].join('\n') : undefined,
-      !task.transcript && !task.result && !task.error ? ['', '# activity', `${task.last_activity ?? 'queued'}${task.output_preview ? `\n${task.output_preview}` : ''}`].join('\n') : undefined,
+      hasResp ? ['', '# response sent to orchestrator', task.result].join('\n') : undefined,
+      !task.transcript && !hasResp && !task.error ? ['', '# activity', `${task.last_activity ?? 'queued'}${task.output_preview ? `\n${task.output_preview}` : ''}`].join('\n') : undefined,
     ].filter(Boolean);
     return parts.join('\n').trim();
   }

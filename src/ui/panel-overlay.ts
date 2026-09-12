@@ -28,6 +28,11 @@ function contextWindowForTask(ctx: any, task: SubagentTask): number | undefined 
 }
 
 function setMouseTracking(tui: any, enabled: boolean): void {
+  // In Pi fullscreen mode (TuiAltScreen), the host TUI already enables and owns
+  // full mouse tracking (ENABLE_BUTTON_MOTION_MOUSE / SGR mode). Emitting raw
+  // disabling escapes like \u001b[?1000l can break the terminal mouse mode in
+  // fullscreen or regular scroll mode upon closing or refocusing the overlay.
+  if (tui?.mode === 'fullscreen') return;
   const write = tui?.terminal?.write?.bind(tui.terminal);
   if (typeof write !== 'function') return;
   write(enabled ? '\u001b[?1000h\u001b[?1006h' : '\u001b[?1006l\u001b[?1000l');

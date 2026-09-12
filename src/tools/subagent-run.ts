@@ -45,9 +45,12 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
     parameters: Type.Object({
       agent: Type.String(),
       task: Type.String(),
+      name: Type.Optional(Type.String()),
+      display_name: Type.Optional(Type.String()),
       context: Type.Optional(Type.String()),
       mode: Type.Optional(Type.Union([Type.Literal('task'), Type.Literal('background')])),
     }),
+    renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, onUpdate: any, ctx: any) {
       if (Array.isArray(params?.agents) || typeof params?.agent !== 'string' || !params.agent.trim()) {
         return fail('subagent_run accepts exactly one agent. Use the `agent` string parameter, not `agents`.');
@@ -92,13 +95,16 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
         const result = backgroundPromise ? await Promise.race([runPromise, backgroundPromise]) : await runPromise;
         if (cancelledByDoubleEscape) throw new Error('Subagent run cancelled by double escape');
         if (!('results' in result)) {
-          const details = compactResultDetails(result as any);
-          const response = ok(backgroundLaunchContent(result.task_ids, 'Sent'), details);
+          const launchedTasks = result.task_ids.map((id) => manager.getTask(id)).filter(Boolean) as SubagentTask[];
+          const details = compactResultDetails({ ...result, tasks: launchedTasks } as any);
+          const tasksForLaunch = latestTasks.length ? latestTasks : (launchedTasks.length ? launchedTasks : result.task_ids);
+          const response = ok(backgroundLaunchContent(tasksForLaunch, 'Sent'), details);
           return isBackground ? response : { ...response, terminate: true };
         }
         const failedTasks = (result.results ?? []).filter((task) => task.status === 'failed' || task.status === 'cancelled');
+        const tasksForLaunch = latestTasks.length ? latestTasks : (result.results ?? result.task_ids);
         const text = result.mode === 'background'
-          ? backgroundLaunchContent(result.task_ids, 'Started')
+          ? backgroundLaunchContent(tasksForLaunch, 'Started')
           : formatTaskModeContent(result.results ?? [], ctx?.cwd ?? process.cwd());
         const details = compactResultDetails(result as any);
         const failureText = appendSubagentResumeGuidance(

@@ -1,21 +1,47 @@
 import { safeErrorMetadataDetails } from '../error-metadata.js';
-import { appendSubagentResumeGuidance } from './tools/formatting.js';
+import { appendSubagentResumeGuidance, formatTaskLabel } from './tools/formatting.js';
 import { wrapLineToWidth } from './text-width.js';
+import { ARCH_ICON, BOX_CHARS, CYAN, LIME, RED, electricBorder, padToWidth, themeAccent, themeBg, themeBold, themeDim, themeError, themeFg, themeStatus, themeSuccess, themeTitle, themeWarning, truncateToWidth, visibleWidth } from '../ui/theme.js';
+
+export {
+  ARCH_ICON,
+  BOX_CHARS,
+  CYAN,
+  LIME,
+  RED,
+  electricBorder,
+  padToWidth,
+  themeAccent,
+  themeBg,
+  themeBold,
+  themeDim,
+  themeError,
+  themeFg,
+  themeStatus,
+  themeSuccess,
+  themeTitle,
+  themeWarning,
+  truncateToWidth,
+  visibleWidth,
+};
 
 export function completionMessage(task: any): string {
   const cwd = task?.cwd ?? process.cwd();
-  const result = task.result ?? task.error ?? task.output_preview ?? '(no result captured)';
+  const label = formatTaskLabel(task);
+  const hasResp = typeof task.result === 'string' && task.result.trim().length > 0;
   const content = [
-    `Subagent ${task.agent} ${task.status}: ${task.id}`,
+    `Subagent ${label} ${task.status}`,
+    `task_id: ${task.id ?? task.task_id ?? 'unknown'}`,
     `Undelivered messages: ${task.undelivered_message_count ?? 0}`,
     '',
     'Read only this final response from the subagent. Do not reread the full execution transcript unless the user explicitly asks for debugging details.',
-    '',
-    '## response sent to the orchestrator',
-    '',
-    result,
-  ].join('\n');
-  return appendSubagentResumeGuidance(content, [task], cwd);
+  ];
+  if (hasResp) {
+    content.push('', '## response sent to the orchestrator', '', task.result);
+  } else if (task.error) {
+    content.push('', '## error', '', task.error);
+  }
+  return appendSubagentResumeGuidance(content.join('\n'), [task], cwd);
 }
 
 function safeCompletionErrorMetadata(task: any): Record<string, unknown> | undefined {
@@ -27,7 +53,7 @@ export function sendSubagentCompletionMessage(pi: any, task: any, cwd = task?.cw
   pi.sendMessage?.({
     customType: 'subagent-completion',
     content: completionMessage({ ...task, cwd }),
-    display: true,
+    display: false,
     details: {
       full_result: task.result ?? task.error ?? task.output_preview,
       task: {
@@ -46,8 +72,7 @@ export function sendSubagentCompletionMessage(pi: any, task: any, cwd = task?.cw
       },
     },
   }, {
-    triggerTurn: true,
-    deliverAs: 'followUp',
+    deliverAs: 'nextTurn',
   });
 }
 
@@ -57,41 +82,75 @@ export function renderSubagentCompletionMessage(message: any, options: any, them
   const status = task.status ?? 'completed';
   const failed = status === 'failed' || status === 'cancelled';
   const expanded = Boolean(options?.expanded);
-  const result = details.full_result ?? task.result ?? task.error ?? '';
-  const title = `[subagent] ${task.agent ?? 'subagent'} ${status}: ${task.id ?? task.task_id ?? ''}`.trim();
-  const sections: Array<{ text: string; style?: 'label' | 'status' | 'dim' | 'body' | 'heading' }> = [
-    { text: title, style: 'label' },
-    { text: `response: ${expanded ? 'expanded' : 'collapsed'}${expanded ? '' : ' · ctrl+o to expand'}`, style: expanded ? 'status' : 'dim' },
-  ];
-  if (expanded && result) {
+  const rawResponse = details.full_result ?? task.result;
+  const hasResp = typeof rawResponse === 'string' && rawResponse.trim().length > 0;
+  const responseText = hasResp ? rawResponse : '';
+  const archPrefix = themeFg(theme, 'accent', ARCH_ICON, CYAN);
+  const taskLabel = formatTaskLabel(task);
+  const titleLabel = themeFg(theme, failed ? 'error' : 'customMessageLabel', `[subagent] ${taskLabel} · ${status}`, failed ? RED : CYAN);
+  const title = `${archPrefix} ${titleLabel}`.trim();
+  const sections: Array<{ text: string; style?: 'label' | 'status' | 'dim' | 'body' | 'heading' }> = [];
+  if (!expanded) {
     sections.push(
-      { text: '─'.repeat(24), style: 'dim' },
-      { text: 'response sent to the orchestrator', style: 'heading' },
-      ...String(result).split('\n').map((line) => ({ text: line, style: 'body' as const })),
+      { text: `subagent: ${task.agent ?? 'subagent'} · model: ${task.model ?? 'default/current'} · effort: ${task.effort ?? 'default/current'} · status: ${status}`, style: 'dim' },
+      { text: 'ctrl+o to expand', style: 'dim' },
     );
+  } else {
+    sections.push(
+      { text: `subagent: ${task.agent ?? 'subagent'} · model: ${task.model ?? 'default/current'} · effort: ${task.effort ?? 'default/current'} · status: ${status}`, style: 'dim' },
+    );
+    if (task.attempt) {
+      sections.push({ text: `attempt: ${task.attempt}`, style: 'dim' });
+    }
+    if (hasResp && responseText) {
+      sections.push(
+        { text: BOX_CHARS.horizontal.repeat(24), style: 'dim' },
+        { text: 'response sent to the orchestrator', style: 'heading' },
+        ...String(responseText).split('\n').map((line) => ({ text: line, style: 'body' as const })),
+      );
+    } else if (failed && task.error) {
+      sections.push(
+        { text: BOX_CHARS.horizontal.repeat(24), style: 'dim' },
+        { text: 'error', style: 'heading' },
+        ...String(task.error).split('\n').map((line) => ({ text: line, style: 'body' as const })),
+      );
+    }
   }
   const color = (section: { text: string; style?: 'label' | 'status' | 'dim' | 'body' | 'heading' }, text: string) => {
-    if (section.style === 'label') return theme.fg?.(failed ? 'error' : 'customMessageLabel', text) ?? text;
-    if (section.style === 'status') return theme.fg?.(failed ? 'error' : 'success', text) ?? text;
-    if (section.style === 'dim') return theme.fg?.('dim', text) ?? text;
-    if (section.style === 'heading') return theme.fg?.('toolTitle', text) ?? text;
-    if (section.style === 'body') return theme.fg?.('customMessageText', text) ?? text;
+    if (section.style === 'label') return themeFg(theme, failed ? 'error' : 'customMessageLabel', text, failed ? RED : CYAN);
+    if (section.style === 'status') return themeFg(theme, failed ? 'error' : 'success', text, failed ? RED : LIME);
+    if (section.style === 'dim') return themeDim(theme, text);
+    if (section.style === 'heading') return themeTitle(theme, text);
+    if (section.style === 'body') return themeFg(theme, 'customMessageText', text);
     return text;
   };
   return {
     invalidate() {},
     render(width: number) {
-      const blockWidth = Math.max(1, width);
-      const contentWidth = Math.max(1, blockWidth - 2);
-      const verticalPadding = theme.bg?.('customMessageBg', ' '.repeat(blockWidth)) ?? ' '.repeat(blockWidth);
-      const content = sections.flatMap((section) => wrapLineToWidth(section.text, contentWidth).map((line) => {
-        const styled = color(section, line);
-        const paddedVisibleWidth = Math.min(blockWidth, [...` ${line}`].length);
-        const rightPadding = ' '.repeat(Math.max(0, blockWidth - paddedVisibleWidth));
-        const padded = ` ${styled}${rightPadding}`;
-        return theme.bg?.('customMessageBg', padded) ?? padded;
-      }));
-      return [verticalPadding, ...content, verticalPadding];
+      const safeWidth = Math.max(1, Math.floor(width || 1));
+      if (safeWidth < 10) {
+        return [title, ...sections.flatMap((s) => wrapLineToWidth(s.text, safeWidth))].map((l) => truncateToWidth(l, safeWidth, '…'));
+      }
+      const innerWidth = safeWidth - 2;
+      const contentWidth = Math.max(1, innerWidth - 2);
+      const borderFn = (t: string) => themeFg(theme, 'accent', t, CYAN);
+
+      const maxTitleWidth = Math.max(0, innerWidth - 4);
+      const clippedTitle = truncateToWidth(title, maxTitleWidth, '…');
+      const titleVisWidth = visibleWidth(clippedTitle);
+      const filler = Math.max(0, innerWidth - titleVisWidth - 3);
+      const top = `${borderFn(BOX_CHARS.topLeft)}${borderFn(BOX_CHARS.horizontal)} ${clippedTitle} ${borderFn(BOX_CHARS.horizontal.repeat(filler))}${borderFn(BOX_CHARS.topRight)}`;
+      const middle = sections.flatMap((section) =>
+        wrapLineToWidth(section.text, contentWidth).map((line) => {
+          const styled = color(section, line);
+          const lineVisWidth = visibleWidth(line);
+          const rightPadding = ' '.repeat(Math.max(0, contentWidth - lineVisWidth));
+          return `${borderFn(BOX_CHARS.vertical)} ${styled}${rightPadding} ${borderFn(BOX_CHARS.vertical)}`;
+        }),
+      );
+      const bottom = `${borderFn(BOX_CHARS.bottomLeft)}${borderFn(BOX_CHARS.horizontal.repeat(innerWidth))}${borderFn(BOX_CHARS.bottomRight)}`;
+
+      return [top, ...middle, bottom];
     },
   };
 }

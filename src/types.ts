@@ -68,6 +68,8 @@ export type SubagentsConfig = {
 };
 
 export type SubagentRunInput = {
+  name?: string;
+  display_name?: string;
   agent?: string;
   agents?: string[];
   task: string;
@@ -334,6 +336,7 @@ export type SendMessageResult =
 
 export type SubagentTask = {
   id: string;
+  display_name?: string;
   agent: string;
   mode: SubagentMode;
   effective_mode?: SubagentMode;

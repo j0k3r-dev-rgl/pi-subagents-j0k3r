@@ -1699,4 +1699,86 @@ describe('manager and history integration', () => {
     await expect(runningManager.continueTask({ task_id: background.task_ids[0]!, prompt: 'should fail' }, { cwd: tmp })).rejects.toThrow('Only completed, failed, or cancelled subagent tasks can continue.');
   });
 
+  it('normalizes friendly display_name, respects precedence over name, ignores blank names, bounds length, and preserves across continuations', async () => {
+    writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    const nestedSessionPath = path.join(tmp, 'friendly-nested-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    const runner = vi.fn<SubagentRunner>(async ({ continuation }) => ({
+      result: continuation ? 'continued result' : 'initial result',
+      model: 'mock/model',
+      fallback_used: false,
+      nested_session_path: nestedSessionPath,
+    }));
+    const manager = new SubagentManager(runner);
+
+    // 1. display_name parameter
+    const run1 = await manager.run({
+      agent: 'analyst',
+      task: 'task one',
+      display_name: '  Security Scan  ',
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run1.results?.[0].display_name).toBe('Security Scan');
+    expect(run1.results?.[0].id).toMatch(/^subtask_analyst_/);
+
+    // 2. name parameter fallback
+    const run2 = await manager.run({
+      agent: 'analyst',
+      task: 'task two',
+      name: 'Code Review',
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run2.results?.[0].display_name).toBe('Code Review');
+
+    // 3. display_name takes precedence over name
+    const run3 = await manager.run({
+      agent: 'analyst',
+      task: 'task three',
+      display_name: 'Primary Display Name',
+      name: 'Secondary Fallback Name',
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run3.results?.[0].display_name).toBe('Primary Display Name');
+
+    // 4. whitespace-only display_name falls back to valid name
+    const run4 = await manager.run({
+      agent: 'analyst',
+      task: 'task four',
+      display_name: '   ',
+      name: 'Valid Fallback',
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run4.results?.[0].display_name).toBe('Valid Fallback');
+
+    // 5. whitespace-only name and display_name are ignored (undefined)
+    const run5 = await manager.run({
+      agent: 'analyst',
+      task: 'task five',
+      display_name: '   ',
+      name: ' \t\n ',
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run5.results?.[0].display_name).toBeUndefined();
+
+    // 6. bounded to short UI-safe length (80 chars)
+    const longName = 'A'.repeat(120);
+    const run6 = await manager.run({
+      agent: 'analyst',
+      task: 'task six',
+      display_name: longName,
+      mode: 'task',
+    }, { cwd: tmp });
+    expect(run6.results?.[0].display_name).toHaveLength(80);
+    expect(run6.results?.[0].display_name).toBe('A'.repeat(80));
+
+    // 7. continuation preserves display_name
+    const continued = await manager.continueTask({
+      task_id: run1.task_ids[0]!,
+      prompt: 'resume task one',
+    }, { cwd: tmp });
+    expect(continued.results?.[0].display_name).toBe('Security Scan');
+    expect(continued.results?.[0].attempt).toBe(2);
+  });
+
 });

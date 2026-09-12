@@ -53,19 +53,20 @@ describe('subagent_continue tool', () => {
 
     expect(continueTool.description).toContain('explicit user decision');
     expect(continueTool.description).toContain('Never auto-switch models');
+    expect(continueTool.renderShell).toBe('self');
     expect(continueTool.parameters.properties.mode.anyOf.map((entry: any) => entry.const)).toEqual(['task', 'background']);
-    expect(renderedCall).toContain('subagent analyst (task)');
-    expect(renderedCall).toContain('(ctrl+, or /subagents for details)');
-    expect(renderedCall).toContain(`continue · attempt: 2 · id: ${taskId}`);
-    expect(renderedCall).not.toContain('continuation prompt:');
+    expect(renderedCall).toBe('');
     expect(result.details.task.id).toBe(taskId);
     expect(result.details.task.attempt).toBe(2);
+    expect(result.content[0].text).toContain(`task_id: ${taskId}`);
     expect(result.content[0].text).toContain('continued: Continue with the approved fix.');
     expect(result.content[0].text).not.toContain('subagent_continue');
     expect(result.content[0].text).not.toContain('Ask the user before resuming');
     const renderedResult = continueTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(160).join('\n');
-    expect(renderedResult).toContain('agent: analyst · status: completed · attempt: 2');
-    expect(renderedResult).toContain(`id: ${taskId}`);
+    expect(renderedResult).toContain('subagent: analyst');
+    expect(renderedResult).toContain('status: completed');
+    expect(renderedResult).toContain('ctrl+o to expand');
+    expect(renderedResult).not.toContain(`id: ${taskId}`);
   });
 
   it('streams the same live task-mode progress rendering as subagent_run before completion', async () => {
@@ -223,7 +224,7 @@ describe('subagent_continue tool', () => {
     await vi.waitFor(() => expect(manager.getTask(first.task_ids[0]!, env.tmp)?.status).toBe('running'));
     const immediateResult = await resultPromise;
 
-    expect(renderedCall).toContain('subagent backgrounder (background)');
+    expect(renderedCall).toBe('');
     expect(immediateResult.content[0].text).toContain('Continued 1 subagent task(s) to background');
     expect(immediateResult.content[0].text).toContain('The subagent will notify this chat automatically when it finishes.');
     expect(manager.getTask(first.task_ids[0]!, env.tmp)).toMatchObject({ attempt: 2, mode: 'background', effective_mode: 'background', status: 'running' });
@@ -257,7 +258,7 @@ describe('subagent_continue tool', () => {
     ).render(160).join('\n');
     const result = await continueTool.execute('1', { task_id: first.task_ids[0], prompt: 'Wait for the continuation.', mode: 'task' }, undefined, undefined, { cwd: env.tmp, ui: { onTerminalInput: vi.fn(() => () => undefined) } });
 
-    expect(renderedCall).toContain('subagent backgrounder (task)');
+    expect(renderedCall).toBe('');
     expect(result.content[0].text).toContain('continued in task mode');
     expect(result.details.task).toMatchObject({ attempt: 2, mode: 'task', effective_mode: 'task', status: 'completed' });
     expect(result.content[0].text).not.toContain('to background');
@@ -290,7 +291,7 @@ describe('subagent_continue tool', () => {
     await vi.waitFor(() => expect(manager.getTask(taskId, env.tmp)?.status).toBe('running'));
     const immediateResult = await resultPromise;
 
-    expect(renderedCall).toContain('subagent analyst (background)');
+    expect(renderedCall).toBe('');
     expect(immediateResult.content[0].text).toContain('Continued 1 subagent task(s) to background');
     expect(manager.getTask(taskId, env.tmp)).toMatchObject({ attempt: 2, mode: 'background', effective_mode: 'background', status: 'running' });
 

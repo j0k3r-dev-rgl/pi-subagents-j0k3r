@@ -1055,7 +1055,10 @@ describe('subagents panel and extension ui', () => {
     expect(panel.handleMouse({ type: 'wheel', button: 'none', wheelDelta: -1 })).toEqual({ handled: true, render: true });
     expect(body()).toContain('normalized mouse line 158');
     expect(body()).not.toContain('normalized mouse line 159');
-    expect(panel.handleMouse({ type: 'press', button: 'left' })).toEqual({ handled: true, focus: true });
+    expect(panel.handleMouse({ type: 'press', button: 'left' })).toBeUndefined();
+    expect(panel.handleMouse({ type: 'wheel', button: 'none', wheelDelta: 0 })).toBeUndefined();
+    expect(panel.handleMouse({ type: 'move', button: 'none' })).toBeUndefined();
+    expect(panel.handleMouse({ button: 'none' })).toBeUndefined();
   });
 
   it('scrolls selected thread snapshots with SGR mouse wheel input', () => {
@@ -1388,7 +1391,7 @@ describe('subagents panel and extension ui', () => {
       ui: {
         custom: async (factory: any, options: any) => {
           customOptions = options;
-          const component = factory({ terminal: { write: (text: string) => writes.push(text) }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, () => undefined);
+          const component = factory({ mode: 'fullscreen', terminal: { write: (text: string) => writes.push(text) }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, () => undefined);
           renderedLines = component.render(80);
           component.handleInput('\x1b');
         },
@@ -1397,10 +1400,452 @@ describe('subagents panel and extension ui', () => {
 
     expect(customOptions).toEqual({ overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%', margin: 0 } });
     expect(renderedLines).toHaveLength(48);
-    expect(writes.join('')).toContain('\x1b[?1000h\x1b[?1006h');
-    expect(writes.join('')).toContain('\x1b[?1006l\x1b[?1000l');
+    expect(writes.join('')).not.toContain('\x1b[?1000h');
     if (rows) Object.defineProperty(process.stdout, 'rows', rows);
     else delete (process.stdout as any).rows;
   });
 
+  it('renders fallback execution flow with boxed section headers and no background fills for tool lines', () => {
+    const task: SubagentTask = {
+      id: 'subtask_fallback_boxed_flow',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'fallback task to box',
+      created_at: new Date().toISOString(),
+      prompt: '## delegated task\nanalyze codebase',
+      transcript: 'subagent analyst started\nread src/ui/theme.ts\nbash npm test\n',
+      result: 'analysis finished',
+    };
+    const theme = {
+      fg: (name: string, text: string) => `FG(${name}:${text})`,
+      bg: (name: string, text: string) => `BG(${name}:${text})`,
+      bold: (text: string) => text,
+    };
+    const stripTheme = (text: string) => text.replace(/FG\([^:]+:|\)/g, '').replace(/\u001b\[[0-9;]*m/g, '');
+    const panel = new SubagentsHistoryPanel(
+      [task],
+      theme,
+      () => undefined,
+      () => false,
+      (text) => stripTheme(text).length,
+      (text, width) => stripTheme(text).length > width ? text.slice(0, width) : text,
+      {},
+      40,
+    );
+    const rendered = panel.render(120).join('\n');
+
+    // Section headings are boxed/framed with ┌─ ... ─┐
+    expect(rendered).toContain('FG(accent:┌─ )');
+    expect(rendered).toContain('FG(accent:┐)');
+    expect(rendered).toContain('FG(mdHeading:delegated task)');
+    expect(rendered).toContain('FG(mdHeading:execution)');
+
+    // Tool lines use electric border indicators without toolPendingBg
+    expect(rendered).toContain('FG(accent:│ )');
+    expect(rendered).toContain('FG(toolTitle:read src/ui/theme.ts)');
+    expect(rendered).not.toContain('toolPendingBg');
+    expect(rendered).not.toContain('BG(');
+  });
+
+  it('renders friendly display_name in panel header, hides raw task IDs, and omits response heading when empty', () => {
+    const taskWithName: SubagentTask = {
+      id: 'subtask_panel_friendly_test',
+      display_name: 'Database Schema Migration',
+      agent: 'database',
+      mode: 'task',
+      status: 'completed',
+      task: 'migrate tables',
+      created_at: new Date().toISOString(),
+      result: '', // empty result
+    };
+    const theme = {
+      fg: (_name: string, text: string) => text,
+      bg: (_name: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+    const panel = new SubagentsHistoryPanel(
+      [taskWithName],
+      theme,
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+    );
+    const rendered = panel.render(120).join('\n');
+
+    // Friendly name is shown in header
+    expect(rendered).toContain('Database Schema Migration');
+    // Raw task ID is hidden from user-visible header
+    expect(rendered).not.toContain('id: subtask_');
+    expect(rendered).not.toContain('subtask_panel_friendly_test');
+    // Response heading is absent when result is empty
+    expect(rendered).not.toContain('# response sent to orchestrator');
+    expect(rendered).not.toContain('Preparing for response');
+  });
+
+  it('navigates to referenced subagent execution on mouse click from a fallback flow row', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_parent_001',
+        agent: 'orchestrator',
+        mode: 'task',
+        status: 'completed',
+        task: 'coordinate pipeline',
+        created_at: now,
+        transcript: 'subagent sdd-apply started\nread src/ui/theme.ts\nbash npm test\n',
+      },
+      {
+        id: 'subtask_apply_002',
+        agent: 'sdd-apply',
+        display_name: 'Apply Feature',
+        mode: 'task',
+        status: 'running',
+        task: 'apply changes',
+        created_at: now,
+      },
+    ];
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+    );
+
+    const initialRender = panel.render(120);
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Find terminal row of "subagent sdd-apply"
+    const flowRowIndex = initialRender.findIndex((line) => line.includes('subagent sdd-apply'));
+    expect(flowRowIndex).toBeGreaterThan(0);
+
+    const clickResult = panel.handleMouse({ type: 'click', row: flowRowIndex });
+    expect(clickResult).toEqual({ handled: true, focus: true, render: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(1);
+
+    const secondRender = panel.render(120).join('\n');
+    expect(secondRender).toContain('2/2');
+    expect(secondRender).toContain('Apply Feature');
+    expect(secondRender).toContain('subagent: sdd-apply');
+  });
+
+  it('navigates to referenced subagent execution from structured thread snapshot and hides raw IDs', () => {
+    resetPiComponentCacheForTests();
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_root',
+        agent: 'main',
+        mode: 'task',
+        status: 'completed',
+        task: 'execute tools',
+        created_at: now,
+        thread_snapshot: {
+          version: 1,
+          source: 'events',
+          items: [
+            {
+              type: 'tool',
+              name: 'subagent_run',
+              status: 'completed',
+              arguments: { agent: 'analyst', task: 'analyze performance' },
+              result: {
+                details: { task: { id: 'subtask_secret_id_987', agent: 'analyst' } },
+                content: [{ type: 'text', text: 'analyst executed successfully' }],
+                preview: 'analyst executed successfully',
+                isError: false,
+              },
+            },
+            {
+              type: 'tool',
+              name: 'bash',
+              status: 'completed',
+              arguments: { command: 'git status' },
+              result: {
+                content: [{ type: 'text', text: 'nothing to commit' }],
+                preview: 'nothing to commit',
+                isError: false,
+              },
+            },
+          ],
+        },
+      },
+      {
+        id: 'subtask_secret_id_987',
+        agent: 'analyst',
+        display_name: 'Performance Analysis',
+        mode: 'task',
+        status: 'completed',
+        task: 'analyze performance',
+        created_at: now,
+      },
+    ];
+
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      { cwd: tmp, tui: { requestRender() {} } },
+      30,
+    );
+
+    const initialLines = panel.render(120);
+    const initialText = initialLines.join('\n');
+
+    // MINI-002 / MINI-005: Raw task ID must remain hidden from rendered output
+    expect(initialText).not.toContain('subtask_secret_id_987');
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Find row corresponding to the subagent_run entry
+    const subagentRow = initialLines.findIndex((line) => line.includes('analyst executed successfully') || line.includes('subagent_run'));
+    expect(subagentRow).toBeGreaterThan(0);
+
+    // Click navigation targets the referenced task
+    const clickResult = panel.handleMouse({ type: 'click', row: subagentRow });
+    expect(clickResult).toEqual({ handled: true, focus: true, render: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(1);
+
+    // Render now shows the selected task
+    const nextRender = panel.render(120).join('\n');
+    expect(nextRender).toContain('Performance Analysis');
+    expect(nextRender).not.toContain('subtask_secret_id_987');
+  });
+
+  it('ignores clicks on non-body rows, non-subagent body rows, and empty padding', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_1',
+        agent: 'first',
+        mode: 'task',
+        status: 'completed',
+        task: 'inspect rows',
+        created_at: now,
+        transcript: 'subagent second started\nread src/ui/theme.ts\nbash npm test\n',
+      },
+      {
+        id: 'task_2',
+        agent: 'second',
+        mode: 'task',
+        status: 'completed',
+        task: 'second task',
+        created_at: now,
+      },
+    ];
+
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+    );
+
+    const rendered = panel.render(120);
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Header row 0
+    expect(panel.handleMouse({ type: 'click', row: 0 })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Top frame row 1
+    expect(panel.handleMouse({ type: 'click', row: 1 })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Metadata row 2
+    expect(panel.handleMouse({ type: 'click', row: 2 })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Task strip row
+    const taskStripRow = rendered.findIndex((line) => line.includes('executions 1-2/2'));
+    expect(taskStripRow).toBeGreaterThan(0);
+    expect(panel.handleMouse({ type: 'click', row: taskStripRow })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Non-subagent body tool row: "bash npm test"
+    const bashRow = rendered.findIndex((line) => line.includes('bash npm test'));
+    expect(bashRow).toBeGreaterThan(0);
+    expect(panel.handleMouse({ type: 'click', row: bashRow })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Non-subagent body tool row: "read src/ui/theme.ts"
+    const readRow = rendered.findIndex((line) => line.includes('read src/ui/theme.ts'));
+    expect(readRow).toBeGreaterThan(0);
+    expect(panel.handleMouse({ type: 'click', row: readRow })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Bottom frame row
+    const bottomRow = rendered.length - 1;
+    expect(panel.handleMouse({ type: 'click', row: bottomRow })).toEqual({ handled: true, focus: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+
+    // Wheel scrolling does not change selected task
+    expect(panel.handleMouse({ type: 'wheel', wheelDelta: 1 })).toEqual({ handled: true, render: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+  });
+
+  it('safely handles stale or missing task-id mappings without throwing or exposing IDs', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_parent',
+        agent: 'orchestrator',
+        mode: 'task',
+        status: 'completed',
+        task: 'manage execution',
+        created_at: now,
+        // References a missing subtask ID in transcript
+        transcript: 'subagent deleted-agent (subtask_ghost_9999) started\nread notes.md\n',
+      },
+    ];
+
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+    );
+
+    const rendered = panel.render(120);
+    // Raw task ID must remain hidden from user-visible lines
+    expect(rendered.join('\n')).not.toContain('subtask_ghost_9999');
+
+    const ghostRow = rendered.findIndex((line) => line.includes('deleted-agent'));
+    expect(ghostRow).toBeGreaterThan(0);
+
+    // Clicking does not throw, does not change selection, and returns handled: true, focus: true
+    expect(() => {
+      const res = panel.handleMouse({ type: 'click', row: ghostRow });
+      expect(res).toEqual({ handled: true, focus: true });
+    }).not.toThrow();
+
+    expect(panel.getRenderDebugState().selectedIndex).toBe(0);
+  });
+
+  it('preserves keyboard, expansion, thinking, and cancellation behaviors during click navigation', () => {
+    const now = new Date().toISOString();
+    const cancelled: string[] = [];
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_active_1',
+        agent: 'first',
+        mode: 'task',
+        status: 'running',
+        task: 'first running task',
+        created_at: now,
+        transcript: 'subagent second started\n',
+      },
+      {
+        id: 'task_active_2',
+        agent: 'second',
+        mode: 'task',
+        status: 'running',
+        task: 'second running task',
+        created_at: now,
+      },
+    ];
+
+    const keys: Record<string, string> = {
+      'ctrl+o': '\u000f',
+      'ctrl+t': '\u0014',
+      detailCancel: 'x',
+    };
+
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      (data, key) => data === keys[key],
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+      undefined,
+      undefined,
+      (id) => cancelled.push(id),
+      'x',
+    );
+
+    // Toggle ctrl+o and ctrl+t via keyboard
+    panel.handleInput('\u000f'); // toolOutputExpanded = true
+    panel.handleInput('\u0014'); // hideThinkingBlock = true
+
+    const rendered = panel.render(120);
+    const flowRow = rendered.findIndex((line) => line.includes('subagent second'));
+    expect(flowRow).toBeGreaterThan(0);
+
+    // Mouse click navigates to task 2
+    panel.handleMouse({ type: 'click', row: flowRow });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(1);
+
+    // Flow entry click must NOT have triggered cancellation
+    expect(cancelled).toHaveLength(0);
+
+    // Keyboard cancellation on newly selected task works as expected
+    panel.handleInput('x');
+    expect(cancelled).toEqual(['task_active_2']);
+  });
+
+  it('handles SGR mouse click input from handleInput', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task_a',
+        agent: 'orchestrator',
+        mode: 'task',
+        status: 'completed',
+        task: 'root task',
+        created_at: now,
+        transcript: '󰣇 sdd-apply tool completed: bash\n',
+      },
+      {
+        id: 'task_b',
+        agent: 'sdd-apply',
+        mode: 'task',
+        status: 'completed',
+        task: 'apply task',
+        created_at: now,
+      },
+    ];
+
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      (text) => text.length,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      30,
+    );
+
+    const rendered = panel.render(120);
+    const flowRow = rendered.findIndex((line) => line.includes('sdd-apply tool completed: bash'));
+    expect(flowRow).toBeGreaterThan(0);
+
+    // Send SGR mouse click: \x1b[<button;col;rowM (1-based row = flowRow + 1)
+    const sgrInput = `\x1b[<0;10;${flowRow + 1}M`;
+    panel.handleInput(sgrInput);
+
+    expect(panel.getRenderDebugState().selectedIndex).toBe(1);
+  });
+
 });
+

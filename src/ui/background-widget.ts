@@ -1,16 +1,18 @@
 import { wrapLineToWidth } from '../render/text-width.js';
 import type { SubagentTask } from '../types.js';
+import { ARCH_ICON, getArchNeonWorkingIcon, themeBold, themeWarning } from './theme.js';
 
 type ClaudeBackgroundWidgetEntry = {
   key: string;
   line: string;
+  status?: string;
 };
 
-type ClaudeBackgroundTerminalAction =
+export type ClaudeBackgroundTerminalAction =
   | { type: 'focus-editor' }
   | { type: 'open-task'; taskId: string };
 
-type ClaudeBackgroundTerminalInputResult = {
+export type ClaudeBackgroundTerminalInputResult = {
   consume?: boolean;
   data?: string;
   action?: ClaudeBackgroundTerminalAction;
@@ -28,6 +30,17 @@ function matchesKey(data: string, key: string): boolean {
   return keys[key]?.includes(data) ?? data === key;
 }
 
+function isMouseClickInput(data: string): { isClick: boolean; row?: number } {
+  // SGR mouse tracking: \u001b[<button;col;rowM
+  const sgr = data.match(/^\u001b\[<(\d+);(\d+);(\d+)M$/);
+  if (sgr) {
+    const button = Number(sgr[1]);
+    const row = Number(sgr[3]) - 1; // 1-based row in terminal to 0-based
+    if (button === 0) return { isClick: true, row };
+  }
+  return { isClick: false };
+}
+
 function normalize(text: string | undefined): string {
   return text ? text.replace(/\s+/g, ' ').trim() : '';
 }
@@ -40,8 +53,15 @@ function buildClaudeBackgroundWidgetEntries(tasks: SubagentTask[]): ClaudeBackgr
   const active = tasks.filter(isActiveBackgroundTask);
   if (!active.length) return [];
   return [
-    { key: 'main', line: 'main' },
-    ...active.map((task) => ({ key: task.id, line: `${task.agent} ${normalize(task.live_activity?.current?.label ?? task.last_activity ?? task.task ?? task.id)}` })),
+    { key: 'main', line: 'main', status: 'idle' },
+    ...active.map((task) => {
+      const line = task.display_name?.trim() || `${task.agent} ${normalize(task.live_activity?.current?.label ?? task.last_activity ?? task.task ?? '')}`.trim();
+      return {
+        key: task.id,
+        line: line || task.agent,
+        status: task.status,
+      };
+    }),
   ];
 }
 
@@ -61,11 +81,31 @@ export function moveClaudeBackgroundWidgetSelection(tasks: SubagentTask[], selec
   return entries[nextIndex]?.key ?? current;
 }
 
-export function renderClaudeBackgroundWidgetLines(tasks: SubagentTask[], selectedKey?: string): string[] | undefined {
+export function renderClaudeBackgroundWidgetLines(
+  tasks: SubagentTask[],
+  selectedKey?: string,
+  options: { archIndicator?: boolean; neonRunning?: boolean; frame?: number } = {},
+): string[] | undefined {
   const entries = buildClaudeBackgroundWidgetEntries(tasks);
   if (!entries.length) return undefined;
   const current = selectedKey === undefined ? undefined : coerceClaudeBackgroundSelection(entries, selectedKey);
-  return entries.map((entry) => `${entry.key === current ? '●' : '○'} ${entry.line}`);
+  const useNeon = Boolean(options.archIndicator || options.neonRunning);
+
+  return entries.map((entry) => {
+    const isSelected = entry.key === current;
+    const isRunning = entry.status === 'running';
+
+    let bullet: string;
+    if (useNeon && isRunning) {
+      bullet = getArchNeonWorkingIcon(options.frame);
+    } else if (useNeon && isSelected) {
+      bullet = ARCH_ICON;
+    } else {
+      bullet = isSelected ? (options.archIndicator ? ARCH_ICON : '●') : '○';
+    }
+
+    return `${bullet} ${entry.line}`;
+  });
 }
 
 export class ClaudeBackgroundWidgetState {
@@ -75,6 +115,8 @@ export class ClaudeBackgroundWidgetState {
   constructor(
     private getTasks: () => SubagentTask[],
     private onChange?: () => void,
+    private onAction?: (action: ClaudeBackgroundTerminalAction) => void,
+    private options: { archIndicator?: boolean; neonRunning?: boolean; frame?: number } = {},
   ) {}
 
   getSelectedKey(): string {
@@ -82,15 +124,55 @@ export class ClaudeBackgroundWidgetState {
     return this.selectedKey;
   }
 
-  renderLines(): string[] {
-    return renderClaudeBackgroundWidgetLines(this.getTasks(), this.navigationActive ? this.getSelectedKey() : undefined) ?? [];
+  renderLines(options?: { archIndicator?: boolean; neonRunning?: boolean; frame?: number }): string[] {
+    return renderClaudeBackgroundWidgetLines(
+      this.getTasks(),
+      this.navigationActive ? this.getSelectedKey() : undefined,
+      options ?? this.options,
+    ) ?? [];
   }
 
   handleWidgetInput(data: string): void {
     this.handleTerminalInput(data);
   }
 
+  handleMouseClick(event: { type?: string; button?: string; row?: number; y?: number; x?: number; col?: number }): ClaudeBackgroundTerminalInputResult {
+    const tasks = this.getTasks().filter(isActiveBackgroundTask);
+    if (!tasks.length) return undefined;
+
+    const entries = buildClaudeBackgroundWidgetEntries(this.getTasks());
+    const row = event.row ?? event.y;
+
+    let targetKey: string | undefined;
+    if (typeof row === 'number' && Number.isFinite(row) && row >= 0 && row < entries.length) {
+      targetKey = entries[row]?.key;
+    } else if (tasks.length === 1) {
+      targetKey = tasks[0]?.id;
+    } else {
+      const running = tasks.find((t) => t.status === 'running');
+      targetKey = running?.id ?? tasks[0]?.id;
+    }
+
+    if (!targetKey) return undefined;
+
+    this.navigationActive = false;
+    this.selectedKey = targetKey;
+    this.onChange?.();
+
+    const action: ClaudeBackgroundTerminalAction = targetKey === 'main'
+      ? { type: 'focus-editor' }
+      : { type: 'open-task', taskId: targetKey };
+
+    this.onAction?.(action);
+    return { consume: true, action };
+  }
+
   handleTerminalInput(data: string, options: { allowActivate?: boolean } = {}): ClaudeBackgroundTerminalInputResult {
+    const mouse = isMouseClickInput(data);
+    if (mouse.isClick) {
+      return this.handleMouseClick({ type: 'click', row: mouse.row });
+    }
+
     const tasks = this.getTasks();
     if (!tasks.some(isActiveBackgroundTask)) {
       if (this.navigationActive || this.selectedKey !== 'main') {
@@ -131,14 +213,19 @@ export class ClaudeBackgroundWidgetState {
       const selectedKey = this.getSelectedKey();
       this.navigationActive = false;
       this.onChange?.();
-      if (selectedKey === 'main') return { consume: true, action: { type: 'focus-editor' } };
-      return { consume: true, action: { type: 'open-task', taskId: selectedKey } };
+      const action: ClaudeBackgroundTerminalAction = selectedKey === 'main'
+        ? { type: 'focus-editor' }
+        : { type: 'open-task', taskId: selectedKey };
+      this.onAction?.(action);
+      return { consume: true, action };
     }
 
     if (this.navigationActive && (matchesKey(data, 'left') || matchesKey(data, 'right') || matchesKey(data, 'escape'))) {
       this.navigationActive = false;
       this.onChange?.();
-      return { consume: true, action: { type: 'focus-editor' } };
+      const action: ClaudeBackgroundTerminalAction = { type: 'focus-editor' };
+      this.onAction?.(action);
+      return { consume: true, action };
     }
 
     if (this.navigationActive) return { consume: true };
@@ -150,20 +237,50 @@ export class ClaudeBackgroundWidget {
   constructor(
     private state: ClaudeBackgroundWidgetState,
     private theme: any,
+    private options: { archIndicator?: boolean; neonRunning?: boolean; frame?: number } = {},
+    private onAction?: (action: ClaudeBackgroundTerminalAction) => void,
   ) {}
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    return this.state.renderLines().flatMap((line) => wrapLineToWidth(this.decorate(line), width));
+    const isNeon = Boolean(
+      this.options.archIndicator ||
+      this.options.neonRunning ||
+      (typeof this.theme?.bg === 'function'),
+    );
+
+    const renderOptions = isNeon
+      ? { archIndicator: true, neonRunning: true, ...this.options }
+      : this.options;
+
+    const lines = isNeon
+      ? this.state.renderLines(renderOptions)
+      : this.state.renderLines();
+
+    return lines.flatMap((line) => wrapLineToWidth(this.decorate(line), width));
   }
 
   handleInput(data: string): void {
     this.state.handleWidgetInput(data);
   }
 
+  handleMouse(event: { type?: string; button?: string; row?: number; y?: number; x?: number; col?: number }): { handled: true; render?: boolean } | undefined {
+    if (event.type === 'press' || event.type === 'click' || (!event.type && (event.button === 'left' || event.button === undefined))) {
+      const result = this.state.handleMouseClick(event);
+      if (result?.action && this.onAction) {
+        this.onAction(result.action);
+      }
+      if (result) {
+        return { handled: true, render: true };
+      }
+    }
+    return undefined;
+  }
+
   private decorate(line: string): string {
-    if (!line.startsWith('● ')) return line;
-    return this.theme?.fg?.('warning', this.theme?.bold?.(line) ?? line) ?? line;
+    const isSelected = line.startsWith('● ') || line.startsWith(`${ARCH_ICON} `);
+    if (!isSelected) return line;
+    return themeWarning(this.theme, themeBold(this.theme, line));
   }
 }

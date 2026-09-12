@@ -23,10 +23,20 @@ describe('subagent_cancel tool', () => {
     const taskId = launched.details.task_ids[0];
     const cancelled = await cancelTool.execute('2', { task_id: taskId }, undefined, undefined, { cwd: env.tmp });
 
+    expect(cancelTool.renderShell).toBe('self');
+    expect(cancelTool.renderCall({ task_id: taskId }, { fg: (_name: string, text: string) => text }).render(120)).toEqual([]);
     expect(cancelled.content[0].text).toContain('cancelled');
+    expect(cancelled.content[0].text).toContain(`task_id: ${taskId}`);
     expect(cancelled.content[0].text).not.toContain('subagent_continue');
     expect(cancelled.content[0].text).not.toContain('Ask the user before resuming');
     expect(cancelled.details.task).toMatchObject({ id: taskId, status: 'stopping', task: 'cancel me' });
+    const rendered = env.stripAnsi(cancelTool.renderResult(cancelled, { expanded: false }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(120).join('\n'));
+    expect(rendered).toContain('subagent cancel');
+    expect(rendered).toContain('subagent: analyst');
+    expect(rendered).toContain('status: stopping');
+    expect(rendered).toContain('ctrl+o to expand');
+    expect(rendered).not.toContain(taskId);
+    expect(rendered).not.toContain('task_id:');
   });
 
   it('cancels a delegated task and returns compact task details', async () => {

@@ -30,11 +30,14 @@ describe('subagent_run tool', () => {
     expect(runTool.description).toContain('task');
     expect(runTool.description).toContain('background');
     expect(runTool.description).toContain('instead of sleeping, polling status, or fetching results just to wait');
+    expect(runTool.renderShell).toBe('self');
     expect(runTool.promptSnippet).toContain('omit mode');
     expect(runTool.promptSnippet).toContain('respond immediately');
     expect(runTool.promptSnippet).toContain('do not sleep or poll status just to wait');
     expect(runTool.parameters.properties.mode).toBeDefined();
     expect(runTool.parameters.properties.agent).toBeDefined();
+    expect(runTool.parameters.properties.name).toBeDefined();
+    expect(runTool.parameters.properties.display_name).toBeDefined();
     expect(runTool.parameters.properties.agents).toBeUndefined();
   });
 
@@ -80,6 +83,7 @@ describe('subagent_run tool', () => {
     const text = result.content[0].text;
 
     expect(text).toContain('Sent 1 subagent task(s) to background');
+    expect(text).toContain('task_id: subtask_analyst_');
     expect(text).toContain('Do not call subagent_status or subagent_result just to wait');
     expect(text).toContain('The subagent will notify this chat automatically when it finishes');
     expect(text).toContain('Keep the chat available so the user can continue asking questions');
@@ -147,7 +151,8 @@ describe('subagent_run tool', () => {
     expect(secondResult.terminate).toBe(true);
     expect(notifications.some((message) => message.includes('Sent subagent to background:'))).toBe(true);
     expect(text).toContain('Sent 1 subagent task(s) to background');
-    const taskId = text.match(/subtask_[^\n]+/)?.[0]!;
+    const taskId = secondResult.details?.task_ids?.[0];
+    expect(taskId).toBeDefined();
     expect(manager.getTask(taskId, env.tmp)).toMatchObject({ agent: 'reviewer', mode: 'background' });
 
     const firstResult = await firstResultPromise;
@@ -184,13 +189,15 @@ describe('subagent_run tool', () => {
     const result = await runTool.execute('1', { agent: 'analyst', task: 'return full content', mode: 'task' }, undefined, undefined, { cwd: env.tmp });
 
     expect(result.content[0].text).toContain(rawResponse);
+    expect(result.content[0].text).toContain(`task_id: ${result.details.results[0].id}`);
     expect(result.content[0].text).not.toContain('subagent_continue');
     expect(result.details.results[0].result).toBe(rawResponse);
 
     const collapsed = runTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(90).join('\n');
-    expect(collapsed).toContain('response: collapsed');
+    expect(collapsed).toContain('subagent: analyst');
     expect(collapsed).toContain('ctrl+o to expand');
     expect(collapsed).not.toContain('to=functions.memory_get');
+    expect(collapsed).not.toContain('id: subtask_');
 
     const expanded = runTool.renderResult(result, { expanded: true, isPartial: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n');
     expect(expanded).toContain('Subagent response');
@@ -421,5 +428,36 @@ describe('subagent_run tool', () => {
     const taskId = result.details.task_ids[0];
     await vi.waitFor(() => expect(manager.getTask(taskId, env.tmp)?.status).toBe('failed'));
     expect(manager.getTask(taskId, env.tmp)?.error).toContain('Subagent interaction requires main-thread handling');
+  });
+
+  it('ingests display_name and name via subagent_run and keeps raw IDs hidden from user-visible UI', async () => {
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(async () => ({ result: 'friendly execution done', model: 'mock/model', fallback_used: false }));
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+    const result = await runTool.execute('1', {
+      agent: 'analyst',
+      task: 'friendly task test',
+      display_name: 'Friendly Test Name',
+      mode: 'task',
+    }, undefined, undefined, { cwd: env.tmp });
+
+    // Machine/structured details preserve IDs
+    expect(result.details.task_ids[0]).toMatch(/^subtask_analyst_/);
+    expect(result.details.results[0].id).toMatch(/^subtask_analyst_/);
+    expect(result.details.results[0].display_name).toBe('Friendly Test Name');
+
+    // Default rendered output uses friendly name and hides raw ID
+    const rendered = env.stripAnsi(runTool.renderResult(result, { expanded: false }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
+    expect(rendered).toContain('Friendly Test Name');
+    expect(rendered).toContain('subagent: analyst');
+    expect(rendered).toContain('ctrl+o to expand');
+    expect(rendered).not.toContain('id: subtask_');
+    expect(rendered).not.toContain('subtask_analyst_');
+
+    // No background fills
+    const rawAnsi = runTool.renderResult(result, { expanded: false }, { fg: (_n: string, t: string) => t }).render(120).join('\n');
+    expect(rawAnsi).not.toContain('\x1b[4');
   });
 });

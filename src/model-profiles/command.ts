@@ -4,6 +4,7 @@ import { buildModelProfileRows, globalSubagentsConfigPath, groupAvailableModelsB
 import type { ModelProfileRow } from './data.js';
 import { applyDirtyProfileEdit, commitStagedModelProfiles, stageModelProfileEdit } from './editor.js';
 import { buildNoChangesModelProfilesMessage, constrainLines, frameModal, normalizeModalKey, padToVisibleWidth, pendingLabel, profileLabel, truncateToVisibleWidth, visibleWidth } from './formatting.js';
+import { themeAccent, themeDim, themeTitle, themeWarning } from '../ui/theme.js';
 
 const EFFORT_CHOICES: Array<ThinkingEffort | 'inherit'> = ['inherit', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
@@ -94,7 +95,7 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
 
   const rowKey = (row: ModelProfileRow): string => row.name.trim().toLowerCase();
   const rowScope = (row: ModelProfileRow): SubagentDefinitionScope => row.scope ?? 'global';
-  const dim = (text: string): string => input.theme?.fg?.('dim', text) ?? text;
+  const dim = (text: string): string => themeDim(input.theme, text);
   const scopedName = (row: ModelProfileRow): string => `${row.name} ${dim(rowScope(row) === 'project' ? '(local)' : '(global)')}`;
   const hasDirtyProfileFor = (row: ModelProfileRow): boolean => Object.prototype.hasOwnProperty.call(dirtyProfiles, rowKey(row));
   const dirtyProfileFor = (row: ModelProfileRow): SubagentModelProfile | undefined => dirtyProfiles[rowKey(row)];
@@ -119,7 +120,7 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     const row = selectedRow();
     if (!row) return 'selected: (none)';
     const availability = row.modelLabel.includes('(unavailable)') ? ' · unavailable model' : '';
-    return `selected: ${row.name}${availability} · model: ${rowModelText(row)} · effort: ${rowEffortText(row)}`;
+    return `selected: ${themeAccent(input.theme, row.name)}${availability} · model: ${rowModelText(row)} · effort: ${rowEffortText(row)}`;
   };
 
   const rowListLines = (width: number): string[] => {
@@ -132,8 +133,8 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
       const lines = [`${padToVisibleWidth('agent/phase', nameWidth)}  ${padToVisibleWidth('model', modelWidth)}  ${padToVisibleWidth('effort', effortWidth)}`];
       for (const [offset, item] of visibleRows.entries()) {
         const index = scrollOffset + offset;
-        const marker = index === selectedIndex ? '›' : ' ';
-        const dirty = hasDirtyProfileFor(item) ? '*' : ' ';
+        const marker = index === selectedIndex ? themeAccent(input.theme, '›') : ' ';
+        const dirty = hasDirtyProfileFor(item) ? themeWarning(input.theme, '*') : ' ';
         lines.push(`${marker} ${dirty} ${padToVisibleWidth(scopedName(item), nameWidth - 4)}  ${padToVisibleWidth(rowModelText(item), modelWidth)}  ${padToVisibleWidth(rowEffortText(item), effortWidth)}`);
       }
       return lines;
@@ -141,8 +142,8 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     const lines = ['agent/phase · model · effort'];
     for (const [offset, item] of visibleRows.entries()) {
       const index = scrollOffset + offset;
-      const marker = index === selectedIndex ? '›' : ' ';
-      const dirty = hasDirtyProfileFor(item) ? '*' : ' ';
+      const marker = index === selectedIndex ? themeAccent(input.theme, '›') : ' ';
+      const dirty = hasDirtyProfileFor(item) ? themeWarning(input.theme, '*') : ' ';
       lines.push(`${marker} ${dirty} ${scopedName(item)} · ${rowModelText(item)} · ${rowEffortText(item)}`);
     }
     return lines;
@@ -151,14 +152,14 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
   const renderMain = (width: number): string[] => {
     const dirtyCount = Object.keys(dirtyProfiles).length;
     const body = [
-      `target: local/global by subagent scope · ${pendingLabel(dirtyCount)}`,
+      `target: local/global by subagent scope · ${pendingLabel(dirtyCount, input.theme)}`,
       '↑/↓/j/k move · enter/m model · e effort · M/E/r reset · s save · esc/q cancel',
       '',
       ...rowListLines(width),
       '',
       selectedSummaryLine(),
     ];
-    return frameModal('Subagent model profiles', body, width);
+    return frameModal('Subagent model profiles', body, width, input.theme);
   };
 
   const renderProviderPicker = (width: number): string[] => {
@@ -170,8 +171,11 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     ];
     const items = ['inherit/reset model', ...providerNames];
     if (!providerNames.length) lines.push('No available models found; reset remains available.');
-    for (const [index, item] of items.entries()) lines.push(`${index === pickerIndex ? '›' : ' '} ${item}`);
-    return frameModal('Choose model provider', lines, width);
+    for (const [index, item] of items.entries()) {
+      const marker = index === pickerIndex ? themeAccent(input.theme, '›') : ' ';
+      lines.push(`${marker} ${item}`);
+    }
+    return frameModal('Choose model provider', lines, width, input.theme);
   };
 
   const filteredProviderModels = (): any[] => {
@@ -211,9 +215,10 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
     else if (!models.length) lines.push('No models match the current search.');
     for (const [offset, model] of visibleModels.entries()) {
       const index = pickerScrollOffset + offset;
-      lines.push(`${index === pickerIndex ? '›' : ' '} ${model.label} (${model.provider}/${model.id})`);
+      const marker = index === pickerIndex ? themeAccent(input.theme, '›') : ' ';
+      lines.push(`${marker} ${model.label} (${model.provider}/${model.id})`);
     }
-    return frameModal('Choose model', lines, width);
+    return frameModal('Choose model', lines, width, input.theme);
   };
 
   const renderEffortPicker = (width: number): string[] => {
@@ -224,8 +229,11 @@ export function createSubagentModelProfilesModal(input: ModalInput): ModalCompon
       '',
     ];
     const items = ['inherit/reset effort', ...EFFORT_CHOICES.filter((choice): choice is ThinkingEffort => choice !== 'inherit')];
-    for (const [index, item] of items.entries()) lines.push(`${index === pickerIndex ? '›' : ' '} ${item}`);
-    return frameModal('Choose effort', lines, width);
+    for (const [index, item] of items.entries()) {
+      const marker = index === pickerIndex ? themeAccent(input.theme, '›') : ' ';
+      lines.push(`${marker} ${item}`);
+    }
+    return frameModal('Choose effort', lines, width, input.theme);
   };
 
   const movePicker = (delta: number) => {

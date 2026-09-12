@@ -22,13 +22,15 @@ describe('subagent_result tool', () => {
     const taskId = runResult.details.task_ids?.[0] ?? runResult.details.results?.[0]?.id ?? manager.listTasks(env.tmp)[0]?.id;
     const result = await resultTool.execute('2', { task_id: taskId }, undefined, undefined, { cwd: env.tmp });
 
+    expect(resultTool.renderShell).toBe('self');
     expect(result.content[0].text).toBe(rawResponse);
     expect(result.details.task.result).toBe(rawResponse);
 
     const collapsed = resultTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(80).join('\n');
-    expect(collapsed).toContain('response: collapsed');
+    expect(collapsed).toContain('subagent: analyst');
     expect(collapsed).toContain('ctrl+o to expand');
     expect(collapsed).not.toContain('to=functions.memory_get');
+    expect(collapsed).not.toContain('id: subtask_');
 
     const expanded = resultTool.renderResult(result, { expanded: true, isPartial: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n');
     expect(expanded).toContain('Subagent response');

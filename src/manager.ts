@@ -51,6 +51,21 @@ function compactOutput(text: string, limit = 800): string {
   return normalized.length > limit ? `…${normalized.slice(-limit)}` : normalized;
 }
 
+const MAX_DISPLAY_NAME_LENGTH = 80;
+
+function normalizeDisplayName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const sanitized = sanitizeInteractionTransportText(raw).replace(/\s+/g, ' ').trim();
+  if (!sanitized) return undefined;
+  return sanitized.slice(0, MAX_DISPLAY_NAME_LENGTH);
+}
+
+function resolveDisplayNameInput(displayNameRaw?: unknown, nameRaw?: unknown): string | undefined {
+  const displayCandidate = normalizeDisplayName(displayNameRaw);
+  if (displayCandidate) return displayCandidate;
+  return normalizeDisplayName(nameRaw);
+}
+
 function isSqliteBusyError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { code?: unknown; errcode?: unknown; errstr?: unknown; message?: unknown };
@@ -553,12 +568,13 @@ export class SubagentManager {
 
     const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
     const limiter = this.limiter(cwd, config.max_concurrency);
+    const displayName = resolveDisplayNameInput(input.display_name, input.name);
     let ids: string[] = [];
     const notifyUpdate = () => onTaskUpdate?.(ids.map((id) => this.tasks.get(id)!).filter(Boolean));
     ids = agents.map((agent) => {
       const definition = definitions.get(agent.toLowerCase());
       if (!definition) throw new Error(`Subagent not found: ${agent}`);
-      return this.startOne(definition, input.task, input.context, explicitMode, ctx, config, parentSignal, notifyUpdate, limiter);
+      return this.startOne(definition, input.task, input.context, explicitMode, ctx, config, parentSignal, notifyUpdate, limiter, displayName);
     });
     notifyUpdate();
     const launched = ids.map((id) => this.tasks.get(id)!).filter(Boolean);
@@ -732,12 +748,14 @@ export class SubagentManager {
     parentSignal?: AbortSignal,
     onTaskUpdate?: () => void,
     limiter = createLimiter(1),
+    displayName?: string,
   ): string {
     const session_id = sessionIdFromContext(ctx);
     const effectiveProfile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
     const effectiveMode = resolveEffectiveSubagentMode({ invocationMode: mode, definition, config });
     const task: SubagentTask = {
       id: taskId(definition.name),
+      display_name: displayName,
       agent: definition.name,
       mode: effectiveMode,
       effective_mode: effectiveMode,

@@ -1,4 +1,5 @@
 import type { SubagentModelProfile } from '../types.js';
+import { BOX_CHARS, CYAN, themeDim, themeFg, themeWarning } from '../ui/theme.js';
 import { globalSubagentsConfigPath } from './data.js';
 
 export function buildNoChangesModelProfilesMessage(agentDir?: string): string {
@@ -52,21 +53,31 @@ export function padToVisibleWidth(text: string, width: number): string {
   return `${clipped}${' '.repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-export function frameModal(title: string, body: string[], width: number): string[] {
+export function frameModal(title: string, body: string[], width: number, theme?: any): string[] {
   const safeWidth = Math.max(1, Math.floor(width || 1));
   if (safeWidth < 24) return constrainLines([title, ...body], safeWidth);
   const innerWidth = safeWidth - 2;
   const contentWidth = Math.max(1, innerWidth - 2);
   const titleText = ` ${title} `;
   const visibleTitle = truncateToVisibleWidth(titleText, Math.max(1, innerWidth));
-  const top = `╭${visibleTitle}${'─'.repeat(Math.max(0, innerWidth - visibleWidth(visibleTitle)))}╮`;
-  const bottom = `╰${'─'.repeat(innerWidth)}╯`;
-  return [top, ...body.map((line) => `│ ${padToVisibleWidth(line, contentWidth)} │`), bottom];
+  const chars = theme ? BOX_CHARS : {
+    topLeft: '╭',
+    topRight: '╮',
+    vertical: '│',
+    bottomLeft: '╰',
+    bottomRight: '╯',
+    horizontal: '─',
+  };
+  const borderFn = (char: string) => themeFg(theme, 'accent', char, CYAN);
+  const top = `${borderFn(chars.topLeft)}${visibleTitle}${borderFn(chars.horizontal.repeat(Math.max(0, innerWidth - visibleWidth(visibleTitle))))}${borderFn(chars.topRight)}`;
+  const bottom = `${borderFn(chars.bottomLeft)}${borderFn(chars.horizontal.repeat(innerWidth))}${borderFn(chars.bottomRight)}`;
+  return [top, ...body.map((line) => `${borderFn(chars.vertical)} ${padToVisibleWidth(line, contentWidth)} ${borderFn(chars.vertical)}`), bottom];
 }
 
-export function pendingLabel(count: number): string {
+export function pendingLabel(count: number, theme?: any): string {
   if (count === 0) return 'pending: none';
-  return `pending: ${count} change${count === 1 ? '' : 's'}`;
+  const text = `pending: ${count} change${count === 1 ? '' : 's'}`;
+  return theme ? themeWarning(theme, text) : text;
 }
 
 export function normalizeModalKey(data: string): string {

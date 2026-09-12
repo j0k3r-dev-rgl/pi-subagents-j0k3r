@@ -31,6 +31,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
         Type.Literal('xhigh'),
       ])),
     }),
+    renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, onUpdate: any, ctx: any) {
       let cancelledByDoubleEscape = false;
       let frame = 0;

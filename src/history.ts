@@ -56,6 +56,7 @@ type HistoryReadOptions = { includeSnapshots?: boolean };
 
 const SESSION_TASK_METADATA_COLUMNS = `
         id,
+        display_name,
         cwd,
         agent,
         mode,
@@ -103,6 +104,7 @@ function configureHistoryDb(db: Db): void {
 }
 
 function ensureAttemptColumns(db: Db): void {
+  ensureColumn(db, 'subagent_task_attempts', 'display_name', 'TEXT');
   ensureColumn(db, 'subagent_task_attempts', 'cwd', 'TEXT');
   ensureColumn(db, 'subagent_task_attempts', 'agent', 'TEXT');
   ensureColumn(db, 'subagent_task_attempts', 'mode', 'TEXT');
@@ -157,11 +159,12 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
   }
 
   const columns = table === 'subagent_tasks'
-    ? 'id, cwd, agent, mode, status, task, context, created_at, attempt, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts, pending_message_count, undelivered_message_count'
-    : 'task_id, attempt, cwd, agent, mode, status, task, context, created_at, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts, pending_message_count, undelivered_message_count';
+    ? 'id, display_name, cwd, agent, mode, status, task, context, created_at, attempt, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts, pending_message_count, undelivered_message_count'
+    : 'task_id, attempt, display_name, cwd, agent, mode, status, task, context, created_at, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts, pending_message_count, undelivered_message_count';
   const placeholders = new Array(columns.split(',').length).fill('?').join(', ');
   const update = table === 'subagent_tasks'
-    ? `status=excluded.status,
+    ? `display_name=excluded.display_name,
+        status=excluded.status,
         attempt=excluded.attempt,
         session_id=excluded.session_id,
         nested_session_path=excluded.nested_session_path,
@@ -194,7 +197,8 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
         pi_retry_attempts=excluded.pi_retry_attempts,
         pending_message_count=excluded.pending_message_count,
         undelivered_message_count=excluded.undelivered_message_count`
-    : `status=excluded.status,
+    : `display_name=excluded.display_name,
+        status=excluded.status,
         session_id=excluded.session_id,
         nested_session_path=excluded.nested_session_path,
         started_at=excluded.started_at,
@@ -233,6 +237,7 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
     ON CONFLICT(${identity}) DO UPDATE SET ${update}
   `).run(
     ...(table === 'subagent_tasks' ? [task.id] : [task.id, task.attempt ?? 1]),
+    value(task.display_name),
     cwd,
     task.agent,
     task.mode,
@@ -291,6 +296,7 @@ export class SubagentHistoryStore {
     db.exec(`
       CREATE TABLE IF NOT EXISTS subagent_tasks (
         id TEXT PRIMARY KEY,
+        display_name TEXT,
         cwd TEXT NOT NULL,
         agent TEXT NOT NULL,
         mode TEXT NOT NULL,
@@ -334,6 +340,7 @@ export class SubagentHistoryStore {
       CREATE TABLE IF NOT EXISTS subagent_task_attempts (
         task_id TEXT NOT NULL,
         attempt INTEGER NOT NULL,
+        display_name TEXT,
         cwd TEXT NOT NULL,
         agent TEXT NOT NULL,
         mode TEXT NOT NULL,
@@ -389,6 +396,7 @@ export class SubagentHistoryStore {
       CREATE INDEX IF NOT EXISTS idx_subagent_events_task ON subagent_events(task_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_subagent_attempts_task ON subagent_task_attempts(task_id, attempt);
     `);
+    ensureColumn(db, 'subagent_tasks', 'display_name', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'attempt', 'INTEGER');
     ensureColumn(db, 'subagent_tasks', 'nested_session_path', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'continuation_prompt', 'TEXT');
@@ -462,6 +470,7 @@ export class SubagentHistoryStore {
     return this.db(cwd).prepare(`
       SELECT
         task_id AS id,
+        display_name,
         cwd,
         agent,
         mode,
@@ -511,6 +520,7 @@ export class SubagentHistoryStore {
 function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
   return {
     id: row.id,
+    display_name: row.display_name ?? undefined,
     agent: row.agent,
     mode: row.mode,
     status: row.status,

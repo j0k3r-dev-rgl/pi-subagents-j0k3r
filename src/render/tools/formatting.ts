@@ -1,5 +1,6 @@
 import { readSubagentsConfig } from '../config.js';
 import type { SubagentTask } from '../types.js';
+import { truncateToWidth } from '../completion-message.js';
 
 export const SUBAGENT_RESUME_GUIDANCE = [
   '## optional resume',
@@ -18,7 +19,7 @@ export function appendSubagentResumeGuidance(text: string, tasks: Array<Pick<Sub
 export function clip(text: string | undefined, limit = 240): string {
   if (!text) return '';
   const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+  return truncateToWidth(normalized, limit, '…');
 }
 
 function formatTokens(count: number): string {
@@ -46,11 +47,40 @@ export function modelEffortLine(task: SubagentTask): string {
   return [`model: ${task.model ?? 'default/current'}`, `effort: ${task.effort ?? 'default/current'}`].join(' · ');
 }
 
+export function formatTaskLabel(task: Pick<SubagentTask, 'agent' | 'display_name' | 'task'> | undefined): string {
+  if (!task) return 'subagent';
+  const displayName = task.display_name?.trim();
+  if (displayName) return displayName;
+  const taskSnippet = clip(task.task, 40);
+  return taskSnippet ? `${task.agent} · ${taskSnippet}` : (task.agent || 'subagent');
+}
+
+export function hasAgentResponse(task?: Pick<SubagentTask, 'result'>, result?: any): boolean {
+  if (typeof result?.details?.full_result === 'string' && result.details.full_result.trim().length > 0) {
+    return true;
+  }
+  if (typeof task?.result === 'string' && task.result.trim().length > 0) {
+    return true;
+  }
+  return false;
+}
+
+export function taskResponseText(task?: Pick<SubagentTask, 'result'>, result?: any): string {
+  if (typeof result?.details?.full_result === 'string' && result.details.full_result.trim().length > 0) {
+    return result.details.full_result;
+  }
+  if (typeof task?.result === 'string' && task.result.trim().length > 0) {
+    return task.result;
+  }
+  return '';
+}
+
 export function formatTask(task: SubagentTask): string {
   const when = task.last_activity_at ?? task.started_at ?? task.created_at;
   const usage = formatUsage(task);
+  const taskLabel = formatTaskLabel(task);
   const lines = [
-    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
+    `task: ${taskLabel} · task_id: ${task.id} · status: ${task.status} · attempt: ${task.attempt ?? 1}`,
     task.effective_mode ? `effective mode: ${task.effective_mode}` : undefined,
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
@@ -59,30 +89,39 @@ export function formatTask(task: SubagentTask): string {
       : `undelivered messages: ${task.undelivered_message_count ?? 0}`,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
   ].filter(Boolean) as string[];
-  const preview = clip(task.output_preview ?? task.result ?? task.error);
-  if (preview) lines.push(`preview: ${preview}`);
+  const response = taskResponseText(task);
+  if (response) {
+    lines.push(`preview: ${clip(response)}`);
+  } else if (task.error) {
+    lines.push(`error: ${clip(task.error)}`);
+  }
   return lines.join('\n');
 }
 
 function formatTaskListItem(task: SubagentTask): string {
   const when = task.last_activity_at ?? task.started_at ?? task.created_at;
   const usage = formatUsage(task);
+  const taskLabel = formatTaskLabel(task);
+  const hasResp = hasAgentResponse(task);
+  const hasPreview = Boolean(task.output_preview || hasResp);
   const lines = [
-    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
+    `subagent: ${task.agent} · task: ${taskLabel} · status: ${task.status} · attempt: ${task.attempt ?? 1}`,
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
-    (task.result || task.error || task.output_preview) ? `preview: collapsed · use subagent_result ${task.id}` : undefined,
+    hasPreview ? `preview: collapsed · ctrl+o to expand` : undefined,
+    task.error ? `error: ${clip(task.error)}` : undefined,
   ].filter(Boolean) as string[];
   return lines.join('\n');
 }
 
 function formatTaskListRow(task: SubagentTask): string {
-  const usage = formatUsage(task);
   return [
-    `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
-    usage ? `usage: ${usage}` : undefined,
-  ].filter(Boolean).join(' · ');
+    `subagent: ${task.agent}`,
+    `model: ${task.model ?? 'default/current'}`,
+    `effort: ${task.effort ?? 'default/current'}`,
+    `status: ${task.status}`,
+  ].join(' · ');
 }
 
 export function formatTaskListSummary(tasks: SubagentTask[]): string {
@@ -90,7 +129,7 @@ export function formatTaskListSummary(tasks: SubagentTask[]): string {
   const mostRecent = tasks[0]!;
   return [
     `Listed ${tasks.length} subagent task(s).`,
-    `Most recent: ${mostRecent.agent} · ${mostRecent.status} · ${mostRecent.id}${mostRecent.task ? ` · task: ${clip(mostRecent.task, 80)}` : ''}`,
+    `Most recent: ${formatTaskLabel(mostRecent)} · task_id: ${mostRecent.id} · model: ${mostRecent.model ?? 'default/current'} · effort: ${mostRecent.effort ?? 'default/current'} · status: ${mostRecent.status}`,
     'List view: collapsed · ctrl+o to expand',
   ].join('\n');
 }
@@ -109,35 +148,41 @@ export function formatTaskListRender(tasks: SubagentTask[], expanded: boolean): 
   ].filter(Boolean).join('\n');
 }
 
-export function collapsedResultHint(task: SubagentTask | undefined, failed: boolean): string {
-  if (!task) return failed ? 'result: collapsed · ctrl+o to expand' : 'response: collapsed · ctrl+o to expand';
-  const label = failed ? 'error' : 'response';
-  return `${label}: collapsed · ctrl+o to expand · /subagents or subagent_result ${task.id}`;
+export function collapsedResultHint(_task: SubagentTask | undefined, _failed: boolean): string {
+  return 'ctrl+o to expand';
 }
 
 export function taskFinalText(task: SubagentTask | undefined, result?: any): string {
-  if (typeof result?.details?.full_result === 'string') return result.details.full_result;
-  return task?.result ?? task?.error ?? task?.output_preview ?? '';
+  return taskResponseText(task, result);
 }
 
 export function formatTaskModeContent(tasks: SubagentTask[], cwd = process.cwd()): string {
   const content = [
     `Completed ${tasks.length} subagent task(s):`,
     ...tasks.map((task) => {
-      const finalText = taskFinalText(task);
+      const responseText = taskResponseText(task);
       return [
         formatTask(task),
-        finalText ? `\n# response from ${task.agent} (${task.id})\n${finalText}` : undefined,
+        responseText ? `\n# response from ${formatTaskLabel(task)}\n${responseText}` : undefined,
       ].filter(Boolean).join('\n');
     }),
   ].join('\n\n');
   return appendSubagentResumeGuidance(content, tasks, cwd);
 }
 
-export function backgroundLaunchContent(taskIds: string[], verb = 'Sent'): string {
+export function backgroundLaunchContent(tasksOrIds: Array<SubagentTask | string>, verb = 'Sent'): string {
+  const lines = tasksOrIds.map((item) => {
+    if (typeof item === 'object' && item !== null) {
+      return `- ${formatTaskLabel(item)} · task_id: ${item.id}`;
+    }
+    const raw = String(item);
+    const match = raw.match(/^subtask_([^_]+)_/);
+    const label = match ? match[1] : raw;
+    return `- ${label} · task_id: ${raw}`;
+  });
   return [
-    `${verb} ${taskIds.length} subagent task(s) to background:`,
-    taskIds.join('\n'),
+    `${verb} ${tasksOrIds.length} subagent task(s) to background:`,
+    ...lines,
     '',
     'Background behavior:',
     '- Do not call subagent_status or subagent_result just to wait.',

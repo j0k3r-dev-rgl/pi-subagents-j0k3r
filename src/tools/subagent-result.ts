@@ -11,6 +11,7 @@ export function createSubagentResultTool(manager: SubagentManager) {
     label: 'Subagent Result',
     description: 'Read result for a delegated subagent task.',
     parameters: Type.Object({ task_id: Type.String() }),
+    renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
         const task = manager.getTask(params.task_id, ctx?.cwd ?? process.cwd());

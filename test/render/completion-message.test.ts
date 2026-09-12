@@ -48,15 +48,16 @@ describe('completion message render', () => {
     };
 
     const collapsed = env.stripAnsi(renderer(message, { expanded: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n'));
-    expect(collapsed).toContain('[subagent] analyst completed: subtask_background_1');
+    expect(collapsed).toContain('[subagent] analyst · completed');
     expect(collapsed).toContain('ctrl+o to expand');
     expect(collapsed).not.toContain('to=functions.memory_get');
+    expect(collapsed).not.toContain('subtask_background_1');
 
     const expanded = env.stripAnsi(renderer(message, { expanded: true }, { fg: (_name: string, text: string) => text }).render(120).join('\n'));
     expect(expanded).toContain('background final response to=functions.memory_get');
   });
 
-  it('adds one themed row of vertical padding above and below the completion content', () => {
+  it('renders completion messages framed with boxed borders and no background padding rows', () => {
     let renderer: any;
     extension({
       registerTool: () => undefined,
@@ -78,11 +79,12 @@ describe('completion message render', () => {
       bg: (_name: string, text: string) => text,
     }).render(80);
 
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toBe(' '.repeat(80));
-    expect(lines[1]).toContain('[subagent] discovery completed');
-    expect(lines[2]).toContain('response: collapsed');
-    expect(lines[3]).toBe(' '.repeat(80));
+    expect(lines[0]).toMatch(/^┌─+ 󰣇 \[subagent\] discovery · completed ─+┐$/);
+    expect(lines[1]).toContain('subagent: discovery');
+    expect(lines).toContainEqual(expect.stringContaining('ctrl+o to expand'));
+    expect(lines.at(-1)).toMatch(/^└─+┘$/);
+    expect(lines[0]).not.toBe(' '.repeat(80));
+    expect(lines.at(-1)).not.toBe(' '.repeat(80));
   });
 
   it('reads the task cwd configuration at notification time for background completion guidance', async () => {
@@ -103,7 +105,7 @@ describe('completion message render', () => {
     expect(sendMessage.mock.calls[0][0].content).not.toContain('Ask the user before resuming');
   });
 
-  it('delivers background completion messages as follow-up turns that automatically trigger the orchestrator exactly once', () => {
+  it('queues background completion messages for the next user turn without auto-triggering a duplicate response', () => {
     const sendMessage = vi.fn();
     sendSubagentCompletionMessage({ sendMessage }, {
       id: 'subtask_notify_1',
@@ -116,10 +118,12 @@ describe('completion message render', () => {
     });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true, deliverAs: 'followUp' });
+    expect(sendMessage.mock.calls[0][0]).toMatchObject({ display: false });
+    expect(sendMessage.mock.calls[0][0].content).toContain('subtask_notify_1');
+    expect(sendMessage.mock.calls[0][1]).toEqual({ deliverAs: 'nextTurn' });
   });
 
-  it('renders background completion messages with a distinct themed block background', () => {
+  it('renders background completion messages with boxed borders and no background fills', () => {
     let renderer: any;
     extension({
       registerTool: () => undefined,
@@ -141,9 +145,13 @@ describe('completion message render', () => {
     };
 
     const rendered = renderer(message, { expanded: false }, theme).render(90).join('\n');
-    expect(rendered).toContain('BG(customMessageBg:');
+    expect(rendered).not.toContain('BG(');
+    expect(rendered).not.toContain('customMessageBg');
+    expect(rendered).toContain('FG(accent:┌)');
+    expect(rendered).toContain('FG(accent:│)');
     expect(rendered).toContain('FG(customMessageLabel:');
-    expect(rendered).toContain('[subagent] discovery completed');
+    expect(rendered).toContain('[subagent] discovery · completed');
+    expect(rendered).toContain('FG(accent:└)');
   });
 
   it('wraps expanded background completion responses instead of truncating them', () => {
@@ -165,8 +173,8 @@ describe('completion message render', () => {
     };
 
     const rendered = env.stripAnsi(renderer(message, { expanded: true }, { fg: (_name: string, text: string) => text }).render(52).join('\n'));
-    expect(rendered).toContain('[subagent] discovery completed:');
-    expect(rendered).toContain('subtask_background_wrap');
+    expect(rendered).toContain('[subagent] discovery · completed');
+    expect(rendered).not.toContain('subtask_background_wrap');
     expect(rendered).toContain('response sent to the orchestrator');
     expect(rendered).toContain('Una herramienta de subagentes en background');
     expect(rendered).toContain('cortes.');
@@ -223,5 +231,54 @@ describe('completion message render', () => {
     expect(serialized).not.toContain('/tmp/fake-private.txt');
     expect(serialized).not.toContain('hidden prompt body');
     expect(serialized).not.toContain('SECRET_FILE_BODY_DO_NOT_SHOW');
+  });
+
+  it('renders friendly display_name in completion title and omits response section when response is absent', () => {
+    let renderer: any;
+    extension({
+      registerTool: () => undefined,
+      registerCommand: () => undefined,
+      registerShortcut: () => undefined,
+      registerMessageRenderer: (customType: string, value: any) => { if (customType === 'subagent-completion') renderer = value; },
+    });
+
+    // 1. With display_name
+    const msgWithName = {
+      customType: 'subagent-completion',
+      content: 'done',
+      details: {
+        full_result: 'audit completed clean',
+        task: { id: 'subtask_comp_name', display_name: 'Security Audit', agent: 'analyst', status: 'completed' },
+      },
+    };
+    const renderedWithName = env.stripAnsi(renderer(msgWithName, { expanded: false }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
+    expect(renderedWithName).toContain('[subagent] Security Audit · completed');
+    expect(renderedWithName).not.toContain('subtask_comp_name');
+
+    // 2. Whitespace-only result should NOT emit "response sent to the orchestrator"
+    const msgEmptyResp = {
+      customType: 'subagent-completion',
+      content: 'done',
+      details: {
+        full_result: '   \n  \t  ',
+        task: { id: 'subtask_comp_empty', agent: 'analyst', status: 'completed', result: '   ' },
+      },
+    };
+    const renderedEmpty = env.stripAnsi(renderer(msgEmptyResp, { expanded: true }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
+    expect(renderedEmpty).not.toContain('response sent to the orchestrator');
+    expect(renderedEmpty).not.toContain('subtask_comp_empty');
+
+    // 3. Error-only message shows error block, not response section
+    const msgError = {
+      customType: 'subagent-completion',
+      content: 'failed',
+      details: {
+        task: { id: 'subtask_comp_err', agent: 'analyst', status: 'failed', error: 'execution timed out' },
+      },
+    };
+    const renderedError = env.stripAnsi(renderer(msgError, { expanded: true }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
+    expect(renderedError).not.toContain('response sent to the orchestrator');
+    expect(renderedError).toContain('error');
+    expect(renderedError).toContain('execution timed out');
   });
 });
