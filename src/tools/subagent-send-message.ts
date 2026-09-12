@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import type { SubagentManager } from '../manager.js';
+import { renderSubagentSendMessageCall, renderSubagentSendMessageResult } from '../render/tools/subagent-send-message.js';
 import { sessionIdFromToolContext } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
@@ -12,6 +13,7 @@ export function createSubagentSendMessageTool(manager: SubagentManager) {
       task_id: Type.String(),
       message: Type.String(),
     }),
+    renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
         const result = manager.sendMessage({
@@ -27,5 +29,7 @@ export function createSubagentSendMessageTool(manager: SubagentManager) {
         return fail(error);
       }
     },
+    renderCall: renderSubagentSendMessageCall,
+    renderResult: renderSubagentSendMessageResult,
   };
 }

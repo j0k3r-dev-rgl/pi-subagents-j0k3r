@@ -2,6 +2,7 @@ import { loadSubagents, readSubagentsConfig, resolveEffectiveSubagentMode } from
 import type { SubagentMode, SubagentTask } from '../types.js';
 import { boxedComponent, emptyComponent, textComponent } from './components.js';
 import { collapsedResultHint, formatTaskLabel, formatUsage, hasAgentResponse, taskFinalText, taskResponseText } from './formatting.js';
+import { resolveExpandHint } from './expansion-hint.js';
 import { progressText } from './progress.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, themeAccent, themeBold, themeDim, themeError, themeStatus, themeSuccess, themeTitle, themeWarning } from '../completion-message.js';
@@ -25,7 +26,7 @@ export function renderSubagentRunCall(_args: any, _theme: any) {
   return emptyComponent();
 }
 
-export function renderSubagentRunResult(result: any, { expanded, isPartial }: any, theme: any) {
+export function renderSubagentRunResult(result: any, { expanded, isPartial }: any, theme: any, context?: any) {
   const task = taskFromDetails(result);
   const archPrefix = themeAccent(theme, ARCH_ICON);
   const isBg = task?.mode === 'background' || task?.effective_mode === 'background' || result?.details?.mode === 'background';
@@ -76,7 +77,7 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
       : `status: ${status}`;
     const lines = [
       metaLine,
-      themeDim(theme, 'ctrl+o to expand'),
+      themeDim(theme, resolveExpandHint('to expand', context)),
     ];
     return boxedComponent(lines, {
       title,

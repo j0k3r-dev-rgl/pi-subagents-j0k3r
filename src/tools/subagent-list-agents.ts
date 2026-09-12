@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import type { SubagentManager } from '../manager.js';
+import { emptyComponent } from '../render/tools/components.js';
 import { formatSubagentList, renderSubagentListResult } from '../render/tools/subagent-list-agents.js';
 import { ok, fail } from './tool-response.js';
 
@@ -18,8 +19,8 @@ export function createSubagentListAgentsTool(manager: SubagentManager) {
         return fail(e);
       }
     },
-    renderResult(result: any, { expanded }: any, theme: any) {
-      return renderSubagentListResult(result, Boolean(expanded), theme);
-    },
+    renderShell: 'self',
+    renderCall: () => emptyComponent(),
+    renderResult: renderSubagentListResult,
   };
 }

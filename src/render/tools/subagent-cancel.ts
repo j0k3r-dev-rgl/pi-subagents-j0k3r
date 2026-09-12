@@ -1,5 +1,6 @@
 import { boxedComponent, emptyComponent } from './components.js';
 import { formatTaskLabel, formatUsage, modelEffortLine } from './formatting.js';
+import { resolveExpandHint } from './expansion-hint.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, CYAN, themeAccent, themeDim, themeError, themeFg, themeStatus, themeTitle } from '../completion-message.js';
 
@@ -7,7 +8,7 @@ export function renderSubagentCancelCall(_args: any, _theme: any) {
   return emptyComponent();
 }
 
-export function renderSubagentCancelResult(result: any, { expanded }: any, theme: any) {
+export function renderSubagentCancelResult(result: any, { expanded }: any, theme: any, context?: any) {
   const task = taskFromDetails(result);
   const failed = Boolean(result?.isError);
   const archPrefix = themeFg(theme, 'accent', ARCH_ICON, CYAN);
@@ -34,7 +35,7 @@ export function renderSubagentCancelResult(result: any, { expanded }: any, theme
       themeDim(theme, 'task_id is available to the agent in tool details'),
     );
   } else {
-    lines.push(themeDim(theme, 'ctrl+o to expand'));
+    lines.push(themeDim(theme, resolveExpandHint('to expand', context)));
   }
 
   return boxedComponent(lines.filter(Boolean), { title, theme, wrapped: true });

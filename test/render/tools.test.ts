@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { SubagentManager } from '../../src/manager.js';
 import { registerSubagentTools } from '../../src/tools.js';
+import { resetExpandKeybindingProviderForTests, setExpandKeybindingProviderForTests } from '../../src/render/tools/expansion-hint.js';
 import { installSubagentTestEnv } from '../helpers/subagent-test-helpers.js';
 
 const env = installSubagentTestEnv();
@@ -498,5 +499,183 @@ describe('tool render helpers', () => {
     expect(renderedValid).toContain('Subagent result ·');
     expect(renderedValid).toContain('Subagent response');
     expect(renderedValid).toContain('All unit tests passed with 100% coverage.');
+  });
+
+  it('registers all 8 public subagent tools with boxed single-frame contracts (renderShell: self, empty call)', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    const registered: Record<string, any> = {};
+    const manager = new SubagentManager(env.mockRunner());
+    registerSubagentTools({ registerTool: (tool: any) => { registered[tool.name] = tool; } }, manager, env.tmp);
+
+    const expectedTools = [
+      'subagent_list_agents',
+      'subagent_run',
+      'subagent_continue',
+      'subagent_status',
+      'subagent_result',
+      'subagent_list_tasks',
+      'subagent_cancel',
+      'subagent_send_message',
+    ];
+
+    expect(Object.keys(registered).sort()).toEqual(expectedTools.sort());
+
+    for (const name of expectedTools) {
+      const tool = registered[name];
+      expect(tool.renderShell, `${name} should have renderShell: self`).toBe('self');
+      expect(typeof tool.renderResult, `${name} should have renderResult`).toBe('function');
+      if (tool.renderCall) {
+        const callLines = tool.renderCall({}, { fg: (_n: string, t: string) => t, bold: (t: string) => t }).render(80);
+        expect(callLines, `${name} renderCall should be empty to prevent duplicate rows`).toHaveLength(0);
+      }
+    }
+  });
+
+  it('renders all 8 public subagent tools with boxed layout, ARCH_ICON header, and width safety in both collapsed and expanded states', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    const registered: Record<string, any> = {};
+    const manager = new SubagentManager(env.mockRunner());
+    registerSubagentTools({ registerTool: (tool: any) => { registered[tool.name] = tool; } }, manager, env.tmp);
+    const theme = { fg: (_n: string, t: string) => t, bold: (t: string) => t };
+
+    const sampleTask = {
+      id: 'subtask_test_123',
+      agent: 'analyst',
+      status: 'completed',
+      attempt: 1,
+      model: 'mock/model',
+      effort: 'high',
+      result: 'task response text',
+    };
+
+    const toolResults: Record<string, any> = {
+      subagent_list_agents: { details: { agents: [{ name: 'analyst', tools: ['read'] }] } },
+      subagent_run: { details: { task: sampleTask } },
+      subagent_continue: { details: { task: sampleTask } },
+      subagent_status: { details: { task: sampleTask } },
+      subagent_result: { details: { task: sampleTask, full_result: 'task response text' } },
+      subagent_list_tasks: { details: { tasks: [sampleTask] } },
+      subagent_cancel: { details: { task: sampleTask } },
+      subagent_send_message: { details: { status: 'queued', task_id: 'subtask_test_123', message: 'steer this' } },
+    };
+
+    for (const [name, result] of Object.entries(toolResults)) {
+      const tool = registered[name];
+
+      // Collapsed
+      const collapsedLines = tool.renderResult(result, { expanded: false, isPartial: false }, theme).render(80);
+      expect(collapsedLines[0], `${name} collapsed top border`).toContain('┌─');
+      expect(collapsedLines[0], `${name} collapsed top border`).toContain('┐');
+      expect(collapsedLines[0], `${name} collapsed ARCH_ICON`).toContain('󰣇');
+      expect(collapsedLines.some((l: string) => l.includes('│')), `${name} collapsed vertical border`).toBe(true);
+      expect(collapsedLines.at(-1), `${name} collapsed bottom border`).toContain('└');
+      expect(collapsedLines.at(-1), `${name} collapsed bottom border`).toContain('┘');
+
+      // Expanded
+      const expandedLines = tool.renderResult(result, { expanded: true, isPartial: false }, theme).render(80);
+      expect(expandedLines[0], `${name} expanded top border`).toContain('┌─');
+      expect(expandedLines[0], `${name} expanded top border`).toContain('┐');
+      expect(expandedLines[0], `${name} expanded ARCH_ICON`).toContain('󰣇');
+      expect(expandedLines.some((l: string) => l.includes('│')), `${name} expanded vertical border`).toBe(true);
+      expect(expandedLines.at(-1), `${name} expanded bottom border`).toContain('└');
+      expect(expandedLines.at(-1), `${name} expanded bottom border`).toContain('┘');
+
+      // Narrow width safety
+      const narrowLines = tool.renderResult(result, { expanded: false, isPartial: false }, theme).render(35);
+      expect(narrowLines.every((l: string) => [...env.stripAnsi(l)].length <= 35), `${name} width safe at 35`).toBe(true);
+    }
+  });
+
+  it('dynamically adapts expansion hints when app.tools.expand keybinding changes and falls back to ctrl+o', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    const registered: Record<string, any> = {};
+    const manager = new SubagentManager(env.mockRunner());
+    registerSubagentTools({ registerTool: (tool: any) => { registered[tool.name] = tool; } }, manager, env.tmp);
+    const theme = { fg: (_n: string, t: string) => t, bold: (t: string) => t };
+
+    const sampleTask = {
+      id: 'subtask_kb_123',
+      agent: 'analyst',
+      status: 'completed',
+      attempt: 1,
+      model: 'mock/model',
+      effort: 'high',
+      result: 'kb response',
+    };
+
+    const toolResults: Record<string, any> = {
+      subagent_list_agents: { details: { agents: [{ name: 'analyst', tools: ['read'] }] } },
+      subagent_run: { details: { task: sampleTask } },
+      subagent_continue: { details: { task: sampleTask } },
+      subagent_status: { details: { task: sampleTask } },
+      subagent_result: { details: { task: sampleTask } },
+      subagent_list_tasks: { details: { tasks: [sampleTask] } },
+      subagent_cancel: { details: { task: sampleTask } },
+      subagent_send_message: { details: { status: 'queued', task_id: 'subtask_kb_123', message: 'steer this' } },
+    };
+
+    try {
+      // 1. Configure custom keybinding 'ctrl+e'
+      setExpandKeybindingProviderForTests((kb) => (kb === 'app.tools.expand' ? 'ctrl+e' : undefined));
+
+      for (const [name, result] of Object.entries(toolResults)) {
+        const tool = registered[name];
+        const collapsedText = tool.renderResult(result, { expanded: false }, theme).render(100).join('\n');
+        expect(collapsedText, `${name} should use custom keybinding ctrl+e`).toContain('ctrl+e to expand');
+        expect(collapsedText, `${name} should NOT contain hardcoded ctrl+o`).not.toContain('ctrl+o to expand');
+      }
+
+      // 2. Reset provider -> should fall back to 'ctrl+o'
+      resetExpandKeybindingProviderForTests();
+
+      for (const [name, result] of Object.entries(toolResults)) {
+        const tool = registered[name];
+        const collapsedText = tool.renderResult(result, { expanded: false }, theme).render(100).join('\n');
+        expect(collapsedText, `${name} should fall back to ctrl+o`).toContain('ctrl+o to expand');
+      }
+    } finally {
+      resetExpandKeybindingProviderForTests();
+    }
+  });
+
+  it('renders subagent_status and subagent_send_message error and rejected states with boxed frames', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    const registered: Record<string, any> = {};
+    const manager = new SubagentManager(env.mockRunner());
+    registerSubagentTools({ registerTool: (tool: any) => { registered[tool.name] = tool; } }, manager, env.tmp);
+    const theme = { fg: (_n: string, t: string) => t, bold: (t: string) => t };
+
+    // subagent_status: task not found (isError / no task)
+    const statusErrorResult = { isError: true, content: [{ type: 'text', text: 'Subagent task not found' }] };
+    const statusErrorLines = registered.subagent_status.renderResult(statusErrorResult, { expanded: false }, theme).render(80);
+    expect(statusErrorLines[0]).toContain('subagent status · failed');
+    expect(statusErrorLines[1]).toContain('Subagent task not found');
+
+    // subagent_status: background task running
+    const bgTask = { id: 'bg_1', agent: 'analyst', status: 'running', mode: 'background', model: 'm', effort: 'low' };
+    const statusBgLines = registered.subagent_status.renderResult({ details: { task: bgTask } }, { expanded: false }, theme).render(80);
+    expect(statusBgLines[0]).toContain('subagent status · analyst · running (background)');
+
+    // subagent_send_message: rejected
+    const rejectedResult = {
+      details: { status: 'rejected', task_id: 't_1', reason: 'unsupported_runtime', message: 'Pi runtime too old' },
+    };
+    const sendRejectedLines = registered.subagent_send_message.renderResult(rejectedResult, { expanded: false }, theme).render(80);
+    expect(sendRejectedLines[0]).toContain('subagent send message · rejected');
+    expect(sendRejectedLines[1]).toContain('status: rejected');
+    expect(sendRejectedLines[1]).toContain('task_id: t_1');
+
+    const sendRejectedExpanded = registered.subagent_send_message.renderResult(rejectedResult, { expanded: true }, theme).render(80).join('\n');
+    expect(sendRejectedExpanded).toContain('reason: unsupported_runtime');
+    expect(sendRejectedExpanded).toContain('Pi runtime too old');
+
+    // subagent_send_message: queued
+    const queuedResult = {
+      details: { status: 'queued', task_id: 't_1', message: 'keep going', pending_message_count: 2 },
+    };
+    const sendQueuedExpanded = registered.subagent_send_message.renderResult(queuedResult, { expanded: true }, theme).render(80).join('\n');
+    expect(sendQueuedExpanded).toContain('subagent send message · queued');
+    expect(sendQueuedExpanded).toContain('pending messages: 2');
+    expect(sendQueuedExpanded).toContain('keep going');
   });
 });

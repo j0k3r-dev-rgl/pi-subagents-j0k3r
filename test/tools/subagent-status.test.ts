@@ -83,4 +83,43 @@ describe('subagent_status tool', () => {
     expect(statusResult.details.task.error).toBe('provider api error');
     expect(statusResult.details.task.error_metadata).toMatchObject({ category: 'serialization_failure', version: 1 });
   });
+
+  it('renders subagent_status with boxed layout in collapsed and expanded states', async () => {
+    const task: any = {
+      id: 'subtask_status_render',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      attempt: 1,
+      model: 'openai/gpt-5.4',
+      effort: 'high',
+      task: 'analyze report',
+      result: 'analysis completed cleanly',
+      usage: { turns: 2, input: 1200, output: 300, cost: 0.05 },
+    };
+    const manager: any = { getTask: () => task };
+    let statusTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_status') statusTool = tool; } }, manager);
+
+    expect(statusTool.renderShell).toBe('self');
+    expect(statusTool.renderCall({}, {}).render(80)).toHaveLength(0);
+
+    const result = await statusTool.execute('1', { task_id: task.id }, undefined, undefined, { cwd: env.tmp });
+    const theme = { fg: (_n: string, t: string) => t, bold: (t: string) => t };
+
+    const collapsed = statusTool.renderResult(result, { expanded: false }, theme).render(80);
+    expect(collapsed[0]).toContain('┌─');
+    expect(collapsed[0]).toContain('󰣇');
+    expect(collapsed[0]).toContain('subagent status · analyst · analyze report · completed');
+    expect(collapsed.join('\n')).toContain('subagent: analyst');
+    expect(collapsed.join('\n')).toContain('ctrl+o to expand');
+    expect(collapsed.join('\n')).not.toContain('analysis completed cleanly');
+
+    const expanded = statusTool.renderResult(result, { expanded: true }, theme).render(80);
+    expect(expanded[0]).toContain('┌─');
+    expect(expanded[0]).toContain('󰣇');
+    expect(expanded.join('\n')).toContain('Subagent response');
+    expect(expanded.join('\n')).toContain('analysis completed cleanly');
+    expect(expanded.join('\n')).toContain('usage:');
+  });
 });

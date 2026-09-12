@@ -1,6 +1,7 @@
 import { readSubagentsConfig } from '../config.js';
 import type { SubagentTask } from '../types.js';
 import { truncateToWidth } from '../completion-message.js';
+import { resolveExpandHint } from './expansion-hint.js';
 
 export const SUBAGENT_RESUME_GUIDANCE = [
   '## optional resume',
@@ -109,7 +110,7 @@ function formatTaskListItem(task: SubagentTask): string {
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
-    hasPreview ? `preview: collapsed · ctrl+o to expand` : undefined,
+    hasPreview ? `preview: collapsed · ${resolveExpandHint('to expand')}` : undefined,
     task.error ? `error: ${clip(task.error)}` : undefined,
   ].filter(Boolean) as string[];
   return lines.join('\n');
@@ -124,32 +125,29 @@ function formatTaskListRow(task: SubagentTask): string {
   ].join(' · ');
 }
 
-export function formatTaskListSummary(tasks: SubagentTask[]): string {
+export function formatTaskListSummary(tasks: SubagentTask[], context?: any): string {
   if (!tasks.length) return 'Listed 0 subagent task(s).';
   const mostRecent = tasks[0]!;
   return [
     `Listed ${tasks.length} subagent task(s).`,
     `Most recent: ${formatTaskLabel(mostRecent)} · task_id: ${mostRecent.id} · model: ${mostRecent.model ?? 'default/current'} · effort: ${mostRecent.effort ?? 'default/current'} · status: ${mostRecent.status}`,
-    'List view: collapsed · ctrl+o to expand',
+    `List view: collapsed · ${resolveExpandHint('to expand', context)}`,
   ].join('\n');
 }
 
-export function formatTaskListRender(tasks: SubagentTask[], expanded: boolean): string {
+export function formatTaskListRender(tasks: SubagentTask[], expanded: boolean, context?: any): string {
   if (!tasks.length) return 'Listed 0 subagent task(s).';
   if (expanded) return `Listed ${tasks.length} subagent task(s):\n\n${tasks.map(formatTaskListItem).join('\n\n')}`;
-  const visible = tasks.slice(0, 5);
-  const hidden = tasks.length - visible.length;
+  const mostRecent = tasks[0]!;
+  const recentLabel = formatTaskLabel(mostRecent);
   return [
-    `Listed ${tasks.length} subagent task(s).`,
-    'List view: collapsed · ctrl+o to expand',
-    '',
-    ...visible.map(formatTaskListRow),
-    hidden > 0 ? `… ${hidden} more task(s) hidden` : undefined,
-  ].filter(Boolean).join('\n');
+    `most recent: ${recentLabel} · status: ${mostRecent.status}`,
+    resolveExpandHint('to expand', context),
+  ].join('\n');
 }
 
-export function collapsedResultHint(_task: SubagentTask | undefined, _failed: boolean): string {
-  return 'ctrl+o to expand';
+export function collapsedResultHint(_task: SubagentTask | undefined, _failed: boolean, context?: any): string {
+  return resolveExpandHint('to expand', context);
 }
 
 export function taskFinalText(task: SubagentTask | undefined, result?: any): string {

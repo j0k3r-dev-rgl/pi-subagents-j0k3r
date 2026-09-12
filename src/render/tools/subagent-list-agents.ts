@@ -1,5 +1,7 @@
 import type { ModelRef, ThinkingEffort } from '../types.js';
-import { textComponent } from './components.js';
+import { boxedComponent } from './components.js';
+import { resolveExpandHint } from './expansion-hint.js';
+import { ARCH_ICON, CYAN, themeDim, themeFg, themeTitle } from '../completion-message.js';
 
 export type ListedSubagent = {
   name: string;
@@ -23,23 +25,46 @@ export function formatSubagentList(agents: ListedSubagent[], includeTools: boole
   )).join('\n');
 }
 
-export function renderSubagentListResult(result: any, expanded: boolean, theme: any) {
+export function renderSubagentListResult(result: any, options: any, theme: any, context?: any) {
+  const expanded = Boolean(typeof options === 'object' && options !== null ? options.expanded : options);
   const agents: ListedSubagent[] = Array.isArray(result?.details?.agents) ? result.details.agents : [];
-  if (!agents.length) return textComponent('No subagents available.');
-  const dim = (text: string) => theme?.fg?.('dim', text) ?? text;
+  const archPrefix = themeFg(theme, 'accent', ARCH_ICON, CYAN);
+  const title = `${archPrefix} ${themeTitle(theme, agents.length ? `subagents · ${agents.length} available` : 'subagents')}`;
 
-  if (expanded) {
-    return textComponent(agents.flatMap((agent) => [
-      summary(agent),
-      dim(`  tools: ${agent.tools.join(', ') || 'none'}`),
-    ]).join('\n'));
+  if (!agents.length) {
+    return boxedComponent([themeDim(theme, 'No subagents available.')], {
+      title,
+      theme,
+      wrapped: true,
+    });
   }
 
-  const visible = agents.slice(0, 5);
-  const hidden = agents.length - visible.length;
-  return textComponent([
-    ...visible.map(summary),
-    hidden > 0 ? dim(`… ${hidden} more agents hidden`) : undefined,
-    dim('ctrl+o to expand'),
-  ].filter((line): line is string => Boolean(line)).join('\n'));
+  if (expanded) {
+    const lines = agents.flatMap((agent) => [
+      summary(agent),
+      themeDim(theme, `  tools: ${agent.tools.join(', ') || 'none'}`),
+    ]);
+    return boxedComponent(lines, {
+      title,
+      theme,
+      wrapped: true,
+    });
+  }
+
+  const names = agents.map((a) => a.name);
+  const sample = names.slice(0, 5).join(', ');
+  const summaryLine = agents.length > 5
+    ? `agents: ${sample}, … (${agents.length} total)`
+    : `agents: ${sample}`;
+
+  const lines = [
+    summaryLine,
+    themeDim(theme, resolveExpandHint('to expand', context)),
+  ];
+
+  return boxedComponent(lines, {
+    title,
+    theme,
+    wrapped: true,
+  });
 }

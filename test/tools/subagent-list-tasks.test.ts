@@ -47,9 +47,9 @@ describe('subagent_list_tasks tool', () => {
     expect(result.details.tasks[0].result).toBeUndefined();
 
     const collapsed = listTool.renderResult(result, { expanded: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n');
-    expect(collapsed).toContain('Listed 1 subagent task');
+    expect(collapsed).toContain('subagent tasks · 1 listed');
+    expect(collapsed).toContain('most recent: analyst · list compactly · status: completed');
     expect(collapsed).toContain('ctrl+o to expand');
-    expect(collapsed).toContain('subagent: analyst');
     expect(collapsed).not.toContain('to=functions.memory_get');
     expect(collapsed).not.toContain('id: subtask_');
 

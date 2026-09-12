@@ -138,4 +138,32 @@ describe('subagent_send_message tool', () => {
     const zeroUndelivered = await resultTool.execute('result-2', { task_id: legacyTaskId }, undefined, undefined, { cwd: env.tmp });
     expect(zeroUndelivered.details.task).toMatchObject({ undelivered_message_count: 0 });
   }, 5000);
+
+  it('renders subagent_send_message with boxed layout in collapsed and expanded states', () => {
+    let sendTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_send_message') sendTool = tool; } }, new SubagentManager(env.mockRunner()));
+
+    expect(sendTool.renderShell).toBe('self');
+    expect(sendTool.renderCall({}, {}).render(80)).toHaveLength(0);
+
+    const queuedResult = {
+      content: [{ type: 'text', text: 'queued: please steer' }],
+      details: { status: 'queued', task_id: 'subtask_123', message: 'please steer', pending_message_count: 1 },
+    };
+    const theme = { fg: (_n: string, t: string) => t, bold: (t: string) => t };
+
+    const collapsed = sendTool.renderResult(queuedResult, { expanded: false }, theme).render(80);
+    expect(collapsed[0]).toContain('┌─');
+    expect(collapsed[0]).toContain('󰣇');
+    expect(collapsed[0]).toContain('subagent send message · queued');
+    expect(collapsed.join('\n')).toContain('task_id: subtask_123');
+    expect(collapsed.join('\n')).toContain('ctrl+o to expand');
+
+    const expanded = sendTool.renderResult(queuedResult, { expanded: true }, theme).render(80);
+    expect(expanded[0]).toContain('┌─');
+    expect(expanded[0]).toContain('󰣇');
+    expect(expanded.join('\n')).toContain('Message');
+    expect(expanded.join('\n')).toContain('please steer');
+    expect(expanded.join('\n')).toContain('pending messages: 1');
+  });
 });

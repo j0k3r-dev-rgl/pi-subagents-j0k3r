@@ -62,13 +62,11 @@ describe('subagent_list_agents tool', () => {
     const collapsed = tool.renderResult(result, { expanded: false }, theme).render(200).join('\n');
     const expanded = tool.renderResult(result, { expanded: true }, theme).render(200).join('\n');
 
-    expect(collapsed).toContain('agent-1 · model: openai/gpt-5.4 · effort: high');
-    expect(collapsed).toContain('agent-5 · model: default/current · effort: default/current');
-    expect(collapsed).not.toContain('agent-6 ·');
-    expect(collapsed).toContain('<dim>… 2 more agents hidden</dim>');
+    expect(collapsed).toContain('agents: agent-1, agent-2, agent-3, agent-4, agent-5, … (7 total)');
     expect(collapsed).toContain('<dim>ctrl+o to expand</dim>');
     expect(collapsed).not.toContain('tools:');
 
+    expect(expanded).toContain('agent-1 · model: openai/gpt-5.4 · effort: high');
     expect(expanded).toContain('agent-6 · model: default/current · effort: default/current');
     expect(expanded).toContain('agent-7 · model: default/current · effort: default/current');
     expect(expanded).toContain('<dim>  tools: read, memory_search</dim>');

@@ -91,7 +91,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
         uninstallBackground();
       }
     },
-    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, manager.getTask(args.task_id, process.cwd()), process.cwd()),
+    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, args?.task_id ? manager.getTask(args.task_id, process.cwd()) : undefined, process.cwd()),
     renderResult: renderSubagentContinueResult,
   };
 }

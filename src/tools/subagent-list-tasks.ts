@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import type { SubagentManager } from '../manager.js';
+import { emptyComponent } from '../render/tools/components.js';
 import { formatTaskListSummary } from '../render/tools/formatting.js';
 import { renderSubagentListTasksResult } from '../render/tools/subagent-list-tasks.js';
 import { compactTaskWithoutFinalText, sessionIdFromToolContext } from './result-details.js';
@@ -19,6 +20,8 @@ export function createSubagentListTasksTool(manager: SubagentManager) {
         return ok(formatTaskListSummary(compactTasks as any), { tasks: compactTasks });
       } catch (e) { return fail(e); }
     },
+    renderShell: 'self',
+    renderCall: () => emptyComponent(),
     renderResult: renderSubagentListTasksResult,
   };
 }

@@ -13,6 +13,6 @@ export function renderSubagentContinueCall(args: any, theme: any, task?: Subagen
   return renderSubagentTaskCall(task?.agent ?? 'continue', mode, theme, detail);
 }
 
-export function renderSubagentContinueResult(result: any, options: any, theme: any) {
-  return renderSubagentRunResult(result, options, theme);
+export function renderSubagentContinueResult(result: any, options: any, theme: any, context?: any) {
+  return renderSubagentRunResult(result, options, theme, context);
 }

@@ -1,9 +1,10 @@
 import { boxedComponent } from './components.js';
 import { formatTaskLabel, formatUsage, hasAgentResponse, modelEffortLine, taskResponseText } from './formatting.js';
+import { resolveExpandHint } from './expansion-hint.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, CYAN, themeFg } from '../completion-message.js';
 
-export function renderSubagentResult(result: any, { expanded }: any, theme: any) {
+export function renderSubagentResult(result: any, { expanded }: any, theme: any, context?: any) {
   const task = taskFromDetails(result);
   const failed = Boolean(result?.isError || task?.status === 'failed' || task?.status === 'cancelled');
   const isRunning = task?.status === 'running' || task?.status === 'queued';
@@ -40,7 +41,7 @@ export function renderSubagentResult(result: any, { expanded }: any, theme: any)
     const metaLine = `subagent: ${theme.fg?.('accent', task.agent) ?? task.agent} · model: ${task.model ?? 'default/current'} · effort: ${task.effort ?? 'default/current'} · status: ${status}`;
     const lines = [
       metaLine,
-      theme.fg?.('dim', 'ctrl+o to expand') ?? 'ctrl+o to expand',
+      theme.fg?.('dim', resolveExpandHint('to expand', context)) ?? resolveExpandHint('to expand', context),
     ];
     return boxedComponent(lines, {
       title,
