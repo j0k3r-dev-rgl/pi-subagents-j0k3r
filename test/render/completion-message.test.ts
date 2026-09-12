@@ -105,7 +105,7 @@ describe('completion message render', () => {
     expect(sendMessage.mock.calls[0][0].content).not.toContain('Ask the user before resuming');
   });
 
-  it('queues background completion messages for the next user turn without auto-triggering a duplicate response', () => {
+  it('delivers background completion messages as followUp and triggers an LLM turn immediately', () => {
     const sendMessage = vi.fn();
     sendSubagentCompletionMessage({ sendMessage }, {
       id: 'subtask_notify_1',
@@ -118,9 +118,9 @@ describe('completion message render', () => {
     });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls[0][0]).toMatchObject({ display: false });
+    expect(sendMessage.mock.calls[0][0]).toMatchObject({ display: true });
     expect(sendMessage.mock.calls[0][0].content).toContain('subtask_notify_1');
-    expect(sendMessage.mock.calls[0][1]).toEqual({ deliverAs: 'nextTurn' });
+    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true, deliverAs: 'followUp' });
   });
 
   it('renders background completion messages with boxed borders and no background fills', () => {

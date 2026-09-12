@@ -53,7 +53,7 @@ export function sendSubagentCompletionMessage(pi: any, task: any, cwd = task?.cw
   pi.sendMessage?.({
     customType: 'subagent-completion',
     content: completionMessage({ ...task, cwd }),
-    display: false,
+    display: true,
     details: {
       full_result: task.result ?? task.error ?? task.output_preview,
       task: {
@@ -72,7 +72,8 @@ export function sendSubagentCompletionMessage(pi: any, task: any, cwd = task?.cw
       },
     },
   }, {
-    deliverAs: 'nextTurn',
+    triggerTurn: true,
+    deliverAs: 'followUp',
   });
 }
 

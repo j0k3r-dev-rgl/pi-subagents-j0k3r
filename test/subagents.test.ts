@@ -91,4 +91,70 @@ describe('subagents smoke', () => {
     expect(reconcileOrphanedTasks).toHaveBeenCalledWith(env.tmp);
     expect(cancelRunning).toHaveBeenCalledWith('Pi session shutdown');
   });
+
+  it('suppresses stale Pi context errors from delayed background completion delivery', async () => {
+    vi.resetModules();
+    let onTerminalBackgroundTask: ((task: any, cwd?: string) => void) | undefined;
+    const managerInstance = { reconcileOrphanedTasks: vi.fn(), cancelRunning: vi.fn(), listSessionTasks: () => [] };
+    class MockManager {
+      constructor(_runner?: unknown, _max?: unknown, completion?: (task: any, cwd?: string) => void) {
+        onTerminalBackgroundTask = completion;
+        return managerInstance as any;
+      }
+    }
+    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
+    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
+
+    const pi = {
+      sendMessage: vi.fn(() => { throw new Error('This extension ctx is stale after session replacement or reload'); }),
+      registerMessageRenderer: vi.fn(),
+      registerShortcut: vi.fn(),
+      registerCommand: vi.fn(),
+      registerTool: vi.fn(),
+    };
+
+    reloadedExtension(pi);
+
+    expect(() => onTerminalBackgroundTask?.({ id: 'subtask_stale', agent: 'discovery', status: 'completed', mode: 'background', result: 'done' }, env.tmp)).not.toThrow();
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not deliver a background completion to a replaced Pi session', async () => {
+    vi.resetModules();
+    let onTerminalBackgroundTask: ((task: any, cwd?: string) => void) | undefined;
+    const managerInstance = {
+      reconcileOrphanedTasks: vi.fn(),
+      cancelRunning: vi.fn(),
+      onTaskUpdate: vi.fn(() => () => undefined),
+      listActiveSessionTasks: () => [],
+      listSessionTasks: () => [],
+    };
+    class MockManager {
+      constructor(_runner?: unknown, _max?: unknown, completion?: (task: any, cwd?: string) => void) {
+        onTerminalBackgroundTask = completion;
+        return managerInstance as any;
+      }
+    }
+    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
+    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
+
+    const handlers = new Map<string, Function>();
+    const pi = {
+      sendMessage: vi.fn(),
+      registerMessageRenderer: vi.fn(),
+      registerShortcut: vi.fn(),
+      registerCommand: vi.fn(),
+      registerTool: vi.fn(),
+      on: vi.fn((event: string, handler: Function) => { handlers.set(event, handler); }),
+    };
+
+    reloadedExtension(pi);
+    handlers.get('session_start')?.({}, { cwd: env.tmp, sessionId: 'session-new', ui: { setWidget: vi.fn() } });
+
+    onTerminalBackgroundTask?.({ id: 'subtask_old', agent: 'discovery', status: 'completed', mode: 'background', result: 'done', session_id: 'session-old' }, env.tmp);
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+
+    onTerminalBackgroundTask?.({ id: 'subtask_new', agent: 'discovery', status: 'completed', mode: 'background', result: 'done', session_id: 'session-new' }, env.tmp);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
 });

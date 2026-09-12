@@ -14,6 +14,11 @@ function currentSessionId(ctx: any): string | undefined {
   return typeof file === 'string' && file.length > 0 ? file : undefined;
 }
 
+function isStaleContextError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('extension ctx is stale') || message.includes('stale after session replacement or reload');
+}
+
 export default function subagentsExtension(pi: any): void {
   const originalRegisterTool = typeof pi.registerTool === 'function' ? pi.registerTool.bind(pi) : undefined;
   if (originalRegisterTool) {
@@ -24,6 +29,7 @@ export default function subagentsExtension(pi: any): void {
   }
   pi.registerMessageRenderer?.('subagent-completion', renderSubagentCompletionMessage);
   const widgetInputSuspensions = new Set<string>();
+  let activeSessionId: string | undefined;
   const setWidgetInputSuspended = (reason: string, active: boolean): void => {
     if (active) widgetInputSuspensions.add(reason);
     else widgetInputSuspensions.delete(reason);
@@ -32,7 +38,13 @@ export default function subagentsExtension(pi: any): void {
     undefined,
     undefined,
     (task, cwd) => {
-      sendSubagentCompletionMessage(pi, task, cwd);
+      const taskSessionId = typeof task?.session_id === 'string' && task.session_id.length > 0 ? task.session_id : undefined;
+      if (taskSessionId && taskSessionId !== activeSessionId) return;
+      try {
+        sendSubagentCompletionMessage(pi, task, cwd);
+      } catch (error) {
+        if (!isStaleContextError(error)) throw error;
+      }
     },
     (active) => { setWidgetInputSuspended('interaction', active); },
   );
@@ -100,6 +112,7 @@ export default function subagentsExtension(pi: any): void {
   pi.on?.('session_start', (_event: unknown, ctx: any) => {
     void preloadPiComponentsForSubagentRendering();
     clearClaudeBackgroundWidget();
+    activeSessionId = currentSessionId(ctx);
     const cwd = ctx?.cwd ?? process.cwd();
     manager.reconcileOrphanedTasks(cwd);
     for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
@@ -109,6 +122,7 @@ export default function subagentsExtension(pi: any): void {
   });
 
   pi.on?.('session_shutdown', () => {
+    activeSessionId = undefined;
     manager.cancelRunning('Pi session shutdown');
     clearClaudeBackgroundWidget();
   });
