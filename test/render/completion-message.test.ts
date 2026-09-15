@@ -281,4 +281,120 @@ describe('completion message render', () => {
     expect(renderedError).toContain('error');
     expect(renderedError).toContain('execution timed out');
   });
+
+  it('includes structured error details in completionMessage when error_metadata is present', () => {
+    const message = completionMessage({
+      id: 'subtask_err_details',
+      agent: 'analyst',
+      status: 'failed',
+      error: 'provider auth error',
+      cwd: env.tmp,
+      error_metadata: {
+        category: 'provider_auth_error',
+        message: '503: No capacity available',
+        retryable: false,
+        phase: 'assistant_final',
+        code: 'provider_auth_error',
+        source: { provider: 'antigravity', model: 'gemini-3.8-flash-high', operation: 'session.prompt' },
+        partial_result_available: true,
+        details: { error_class: 'Error', provider_code: '503' },
+      },
+    });
+
+    expect(message).toContain('## error');
+    expect(message).toContain('provider auth error');
+    expect(message).toContain('## error details');
+    expect(message).toContain('- category: provider_auth_error');
+    expect(message).toContain('- phase: assistant_final');
+    expect(message).toContain('- retryable: false');
+    expect(message).toContain('- source: provider=antigravity, model=gemini-3.8-flash-high, op=session.prompt');
+    expect(message).toContain('- partial_result_available: true');
+    expect(message).toContain('- error_class: Error');
+    expect(message).toContain('- provider_code: 503');
+  });
+
+  it('omits error details section when error_metadata is absent', () => {
+    const message = completionMessage({
+      id: 'subtask_no_meta',
+      agent: 'analyst',
+      status: 'failed',
+      error: 'something went wrong',
+      cwd: env.tmp,
+    });
+
+    expect(message).toContain('## error');
+    expect(message).toContain('something went wrong');
+    expect(message).not.toContain('## error details');
+  });
+
+  it('renders structured error details in expanded UI when error_metadata is present', () => {
+    let renderer: any;
+    extension({
+      registerTool: () => undefined,
+      registerCommand: () => undefined,
+      registerShortcut: () => undefined,
+      registerMessageRenderer: (customType: string, value: any) => { if (customType === 'subagent-completion') renderer = value; },
+    });
+
+    const msg = {
+      customType: 'subagent-completion',
+      content: 'failed',
+      details: {
+        task: {
+          id: 'subtask_ui_err',
+          agent: 'discovery',
+          status: 'failed',
+          error: 'provider auth error',
+          error_metadata: {
+            category: 'provider_rate_limit',
+            message: '429: quota exhausted',
+            retryable: true,
+            phase: 'runner_invoke',
+            code: 'provider_rate_limit',
+            source: { provider: 'antigravity', model: 'gemini-3.8-flash-high' },
+            details: { reset_time: '3h25m14s', error_class: 'Error' },
+          },
+        },
+      },
+    };
+
+    const rendered = env.stripAnsi(renderer(msg, { expanded: true }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
+    expect(rendered).toContain('error');
+    expect(rendered).toContain('provider auth error');
+    expect(rendered).toContain('error details');
+    expect(rendered).toContain('- category: provider_rate_limit');
+    expect(rendered).toContain('- phase: runner_invoke');
+    expect(rendered).toContain('- retryable: true');
+    expect(rendered).toContain('- source: provider=antigravity, model=gemini-3.8-flash-high');
+    expect(rendered).toContain('- reset_time: 3h25m14s');
+  });
+
+  it('redacts secrets from error details rendered in completionMessage and UI', () => {
+    const message = completionMessage({
+      id: 'subtask_redact',
+      agent: 'analyst',
+      status: 'failed',
+      error: 'provider api error',
+      cwd: env.tmp,
+      error_metadata: {
+        category: 'provider_auth_error',
+        message: 'Authorization: Bearer sk-fake-secret-token fake.user@example.com /tmp/fake-private.txt',
+        retryable: false,
+        phase: 'assistant_final',
+        details: {
+          provider_code: '429',
+          auth_header: 'Authorization: Bearer sk-fake-secret-token',
+          prompt: 'SYSTEM: hidden prompt body',
+          file_path: '/tmp/fake-private.txt',
+        },
+      },
+    });
+
+    expect(message).toContain('## error details');
+    expect(message).toContain('- category: provider_auth_error');
+    expect(message).not.toContain('sk-fake-secret-token');
+    expect(message).not.toContain('fake.user@example.com');
+    expect(message).not.toContain('/tmp/fake-private.txt');
+    expect(message).not.toContain('hidden prompt body');
+  });
 });

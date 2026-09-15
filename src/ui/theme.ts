@@ -7,10 +7,12 @@ export const DIM = '\x1b[2m';
 // Concrete electric accent tokens:
 export const CYAN = '\x1b[1;38;2;0;229;255m';       // Electric Cyan (#00e5ff)
 export const ARCH_BLUE = '\x1b[1;38;2;23;147;209m';  // Arch Blue (#1793d1)
+export const BLUE = ARCH_BLUE;
 export const VIOLET = '\x1b[1;38;2;153;92;255m';    // Cyber Violet (#995cff)
 export const PINK = '\x1b[1;38;2;255;45;247m';      // Neon Pink (#ff2df7)
 export const LIME = '\x1b[1;38;2;102;255;102m';     // Neon Lime (#66ff66)
 export const AMBER = '\x1b[1;38;2;255;184;77m';     // Electric Amber (#ffb84d)
+export const ORANGE = '\x1b[1;38;2;255;140;0m';     // Neon Orange (#ff8c00)
 export const RED = '\x1b[1;38;2;255;77;109m';       // Cyber Red (#ff4d6d)
 
 // Arch Linux icon token:
@@ -260,7 +262,58 @@ export function fitLine(text: string, width: number): string {
   return padToWidth(text, width);
 }
 
-// Badge and Card helpers:
+export function getToolBorderColor(toolName: string, isError = false): string {
+  if (isError) return RED;
+  const name = toolName.toLowerCase();
+  if (name === 'read') return CYAN;
+  if (name === 'bash') return ORANGE;
+  if (name === 'edit') return VIOLET;
+  if (name === 'write') return PINK;
+  if (name.startsWith('memory_') || name.startsWith('mem_')) return AMBER;
+  if (name.startsWith('subagent')) return CYAN;
+  return CYAN;
+}
+
+export function cardTopBorder(
+  toolName: string,
+  actionOrTarget: string | undefined,
+  innerWidth: number,
+  borderColor: string = CYAN,
+  titleColor: string = CYAN,
+): string {
+  const cleanAction = actionOrTarget ? actionOrTarget.replace(/[\r\n]+/g, ' ').trim() : undefined;
+  let label = cleanAction ? `${toolName} [${cleanAction}]` : toolName;
+
+  const maxTitleWidth = Math.max(4, innerWidth - 4);
+  if (visibleWidth(label) + 2 > maxTitleWidth && cleanAction) {
+    const maxActionWidth = Math.max(3, maxTitleWidth - visibleWidth(toolName) - 5);
+    const truncatedAction = truncateToWidth(cleanAction, maxActionWidth, '…');
+    label = `${toolName} [${truncatedAction}]`;
+  }
+
+  let titleText = ` ${label} `;
+  if (visibleWidth(titleText) > innerWidth) {
+    titleText = ` ${truncateToWidth(label, Math.max(1, innerWidth - 2), '…')} `;
+  }
+
+  const rest = Math.max(0, innerWidth - visibleWidth(titleText));
+  const leftDash = Math.min(2, rest);
+  const rightDash = Math.max(0, rest - leftDash);
+  return `${electric(borderColor, '╭')}${electric(borderColor, '─'.repeat(leftDash))}${electric(titleColor, titleText)}${electric(borderColor, '─'.repeat(rightDash))}${electric(borderColor, '╮')}`;
+}
+
+export function cardBottomBorder(innerWidth: number, borderColor: string = CYAN): string {
+  return `${electric(borderColor, '╰')}${electric(borderColor, '─'.repeat(innerWidth))}${electric(borderColor, '╯')}`;
+}
+
+export function boxLine(content: string, innerWidth: number, borderColor: string = CYAN): string {
+  const innerContentWidth = Math.max(0, innerWidth - 2);
+  return `${electric(borderColor, '│')} ${padToWidth(content, innerContentWidth)} ${electric(borderColor, '│')}`;
+}
+
+export function metric(label: string, value: string | number, color: string): string {
+  return `${electric(DIM, label)} ${electric(color, String(value))}`;
+}
 export function subagentBadge(theme?: any, options?: { archIcon?: boolean }): string {
   const icon = options?.archIcon !== false ? `${ARCH_ICON} ` : '';
   const label = `${icon}subagent`;

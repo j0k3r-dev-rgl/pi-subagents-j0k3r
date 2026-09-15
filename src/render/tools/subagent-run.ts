@@ -6,6 +6,7 @@ import { resolveExpandHint } from './expansion-hint.js';
 import { progressText } from './progress.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, themeAccent, themeBold, themeDim, themeError, themeStatus, themeSuccess, themeTitle, themeWarning } from '../completion-message.js';
+import { openSubagentsPanel } from '../panel-opener.js';
 
 export function renderSubagentTaskCall(_agent?: string, _mode?: 'task' | 'background', _theme?: any, _detail?: string) {
   return emptyComponent();
@@ -52,6 +53,7 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
       title,
       theme,
       wrapped: true,
+      onClick: task?.id ? () => openSubagentsPanel(task.id) : undefined,
     });
   }
   const failed = Boolean(result?.isError || task?.status === 'failed' || task?.status === 'cancelled');
@@ -71,23 +73,8 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
     title = `${archPrefix} ${themeTitle(theme, `subagent · ${taskLabel}`)}`;
   }
 
-  if (!expanded) {
-    const metaLine = task
-      ? `subagent: ${themeAccent(theme, task.agent)} · model: ${task.model ?? 'default/current'} · effort: ${themeAccent(theme, task.effort ?? 'default/current')} · status: ${status}`
-      : `status: ${status}`;
-    const lines = [
-      metaLine,
-      themeDim(theme, resolveExpandHint('to expand', context)),
-    ];
-    return boxedComponent(lines, {
-      title,
-      theme,
-      wrapped: true,
-    });
-  }
-
   const historyShortcut = readSubagentsConfig(process.cwd()).history_panel_shortcut ?? 'ctrl+,';
-  const detailsHint = `(${historyShortcut} or /subagents for details)`;
+  const detailsHint = `(click to view execution) · (${historyShortcut} or /subagents for details)`;
   const usage = task ? formatUsage(task as SubagentTask) : '';
   const metaLines = task
     ? [
@@ -107,5 +94,6 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
     title,
     theme,
     wrapped: true,
+    onClick: task?.id ? () => openSubagentsPanel(task.id) : undefined,
   });
 }

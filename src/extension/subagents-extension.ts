@@ -5,7 +5,7 @@ import { renderSubagentCompletionMessage, sendSubagentCompletionMessage } from '
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from '../tools.js';
 import { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState } from '../ui/background-widget.js';
 import { preloadPiComponentsForSubagentRendering, registerSubagentExternalToolDefinition } from '../thread-view.js';
-import { showSubagentsPanel } from '../ui/panel-overlay.js';
+import { registerSubagentsPanelOpener, showSubagentsPanel } from '../ui/panel-overlay.js';
 
 function currentSessionId(ctx: any): string | undefined {
   const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
@@ -116,13 +116,28 @@ export default function subagentsExtension(pi: any): void {
     const cwd = ctx?.cwd ?? process.cwd();
     manager.reconcileOrphanedTasks(cwd);
     for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
-    if (typeof ctx?.ui?.setWidget !== 'function') return;
     widgetCtx = ctx;
+    registerSubagentsPanelOpener(async (taskId?: string) => {
+      const currentCtx = widgetCtx ?? ctx;
+      if (!currentCtx) return;
+      await preloadPiComponentsForSubagentRendering();
+      await showSubagentsPanel({
+        ctx: currentCtx,
+        pi,
+        manager,
+        selectedTaskId: taskId,
+        setWidgetInputSuspended: (value) => { setWidgetInputSuspended('panel', value); },
+        setActivePanelCancelSelected: (fn) => { activePanelCancelSelected = fn; },
+        setActivePanelRequestRender: (fn) => { activePanelRequestRender = fn; },
+      });
+    });
+    if (typeof ctx?.ui?.setWidget !== 'function') return;
     if (!installClaudeBackgroundWidget(ctx)) return;
   });
 
   pi.on?.('session_shutdown', () => {
     activeSessionId = undefined;
+    registerSubagentsPanelOpener(undefined);
     manager.cancelRunning('Pi session shutdown');
     clearClaudeBackgroundWidget();
   });

@@ -65,7 +65,7 @@ describe('subagent_continue tool', () => {
     const renderedResult = continueTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(160).join('\n');
     expect(renderedResult).toContain('subagent: analyst');
     expect(renderedResult).toContain('status: completed');
-    expect(renderedResult).toContain('ctrl+o to expand');
+    expect(renderedResult).toContain('click to view execution');
     expect(renderedResult).not.toContain(`id: ${taskId}`);
   });
 

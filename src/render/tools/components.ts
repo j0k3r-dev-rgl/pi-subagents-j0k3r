@@ -65,11 +65,19 @@ export interface BoxedComponentOptions {
   theme?: any;
   borderFn?: (text: string) => string;
   wrapped?: boolean;
+  onClick?: () => void;
 }
 
 export function boxedComponent(linesOrText: string | string[], options?: BoxedComponentOptions) {
   return {
     invalidate() {},
+    handleMouse(event: any) {
+      if (options?.onClick && (event?.type === 'click' || (!event?.type && (event?.button === 'left' || event?.button === undefined)))) {
+        options.onClick();
+        return { handled: true };
+      }
+      return undefined;
+    },
     render(width: number): string[] {
       const borderFn = options?.borderFn ?? ((text: string) => {
         if (options?.theme) return themeFg(options.theme, 'accent', text, CYAN);

@@ -3,6 +3,7 @@ import { formatTaskLabel, formatUsage, hasAgentResponse, modelEffortLine, taskRe
 import { resolveExpandHint } from './expansion-hint.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, CYAN, themeFg } from '../completion-message.js';
+import { openSubagentsPanel } from '../panel-opener.js';
 
 export function renderSubagentResult(result: any, { expanded }: any, theme: any, context?: any) {
   const task = taskFromDetails(result);
@@ -69,5 +70,6 @@ export function renderSubagentResult(result: any, { expanded }: any, theme: any,
     title,
     theme,
     wrapped: true,
+    onClick: task?.id ? () => openSubagentsPanel(task.id) : undefined,
   });
 }

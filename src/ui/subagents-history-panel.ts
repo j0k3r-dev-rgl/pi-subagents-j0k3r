@@ -6,7 +6,10 @@ import {
   BOX_CHARS,
   CYAN,
   CYBER_SEPARATOR,
+  LIME,
+  RED,
   VIOLET,
+  AMBER,
   electricBorder,
   themeAccent,
   themeBold,
@@ -18,6 +21,20 @@ import {
   themeTitle,
   themeWarning,
 } from './theme.js';
+
+export const ROUNDED_BOX_CHARS = {
+  topLeft: '╭',
+  topRight: '╮',
+  bottomLeft: '╰',
+  bottomRight: '╯',
+  horizontal: '─',
+  vertical: '│',
+  tDown: '┬',
+  tUp: '┴',
+  tRight: '├',
+  tLeft: '┤',
+  cross: '┼',
+} as const;
 
 function clip(text: string | undefined, limit: number): string {
   if (!text) return '';
@@ -98,24 +115,26 @@ function mouseWheelDelta(data: string): -1 | 1 | undefined {
   return (button & 1) === 0 ? -1 : 1;
 }
 
-function isMouseClickInput(data: string): { isClick: boolean; row?: number } {
-  // SGR mouse tracking: \u001b[<button;col;rowM
+function isMouseClickInput(data: string): { isClick: boolean; row?: number; col?: number } {
   const sgr = data.match(/^\u001b\[<(\d+);(\d+);(\d+)M$/);
   if (sgr) {
     const button = Number(sgr[1]);
-    const row = Number(sgr[3]) - 1; // 1-based row in terminal to 0-based
-    if (button === 0) return { isClick: true, row };
+    const col = Number(sgr[2]) - 1;
+    const row = Number(sgr[3]) - 1;
+    if (button === 0) return { isClick: true, row, col };
   }
-  const urxvt = data.match(/^\u001b\[(\d+);(\d+);(\d+)M$/);
+  const urxvt = data.match(/^\u001b\[(\d+);\d+;\d+M$/);
   if (urxvt) {
     const button = Number(urxvt[1]);
+    const col = Number(urxvt[2]) - 1;
     const row = Number(urxvt[3]) - 1;
-    if (button === 0) return { isClick: true, row };
+    if (button === 0) return { isClick: true, row, col };
   }
   if (data.startsWith('\u001b[M') && data.length >= 6) {
     const button = data.charCodeAt(3) - 32;
+    const col = data.charCodeAt(4) - 32 - 1;
     const row = data.charCodeAt(5) - 32 - 1;
-    if ((button & 64) === 0 && (button & 3) === 0) return { isClick: true, row };
+    if ((button & 64) === 0 && (button & 3) === 0) return { isClick: true, row, col };
   }
   return { isClick: false };
 }
@@ -143,6 +162,7 @@ function snapshotHasActiveTools(snapshot: SubagentThreadSnapshot | undefined): b
 export class SubagentsHistoryPanel {
   private selected = 0;
   private scroll = 0;
+  private sidebarScroll = 0;
   private followTail = true;
   private lastMaxScroll = 0;
   private toolOutputExpanded = false;
@@ -150,6 +170,8 @@ export class SubagentsHistoryPanel {
   private hydratedTasks = new Map<string, { signature: string; task: SubagentTask }>();
   private bodyCache = new Map<string, Array<{ text: string; taskId?: string }>>();
   private rowTaskMap = new Map<number, string>();
+  private lastSidebarWidth = 26;
+  private lastRenderWidth = 100;
   private lastRenderDebugState?: {
     configuredMaxLines: number;
     renderWidth: number;
@@ -191,32 +213,45 @@ export class SubagentsHistoryPanel {
     col?: number;
     wheelDelta?: number;
   }): { handled: true; focus?: boolean; render?: boolean } | undefined {
+    const col = event.col ?? event.x ?? 0;
+    const row = event.row ?? event.y ?? 0;
+
     if (event.type === 'wheel') {
       const delta = Number(event.wheelDelta ?? 0);
       if (!Number.isFinite(delta) || delta === 0) return undefined;
-      if (delta < 0) this.scrollBy(-1);
-      else this.scrollBy(1);
+      if (col <= this.lastSidebarWidth + 2 && event.col !== undefined) {
+        this.sidebarScrollBy(delta);
+      } else {
+        this.scrollBy(delta);
+      }
       return { handled: true, render: true };
     }
-    const isLeftClick = event.type === 'press' || event.type === 'click' || (!event.type && event.button === 'left');
+
+    const isLeftClick = event.type === 'click' || (!event.type && (event.button === 'left' || event.button === undefined));
     if (!isLeftClick) return undefined;
 
-    const row = event.row ?? event.y;
-    if (typeof row === 'number' && Number.isFinite(row)) {
+    // Header close click [esc/q close]
+    if (row === 0 && col >= Math.max(0, this.lastRenderWidth - 16) && event.col !== undefined) {
+      this.done();
+      return { handled: true, render: true };
+    }
+
+    if (typeof row === 'number' && Number.isFinite(row) && this.rowTaskMap.has(row)) {
       const targetTaskId = this.rowTaskMap.get(row);
       if (targetTaskId) {
         const tasks = this.tasks();
         const targetIndex = tasks.findIndex((t) => t.id === targetTaskId);
         if (targetIndex >= 0) {
+          const changed = this.selected !== targetIndex;
           this.selected = targetIndex;
           this.scroll = 0;
           this.followTail = true;
-          return { handled: true, focus: true, render: true };
+          return { handled: true, focus: true, render: changed };
         }
       }
-      return { handled: true, focus: true };
     }
-    return undefined;
+
+    return { handled: true, focus: true };
   }
 
   handleInput(data: string): void {
@@ -248,7 +283,7 @@ export class SubagentsHistoryPanel {
     }
     const mouseClick = isMouseClickInput(data);
     if (mouseClick.isClick && typeof mouseClick.row === 'number') {
-      this.handleMouse({ type: 'click', row: mouseClick.row });
+      this.handleMouse({ type: 'click', row: mouseClick.row, col: mouseClick.col });
       return;
     }
     if (this.matchesKey(data, 'right')) {
@@ -299,6 +334,12 @@ export class SubagentsHistoryPanel {
     }
   }
 
+  private sidebarScrollBy(delta: number): void {
+    const tasks = this.tasks();
+    if (!tasks.length) return;
+    this.sidebarScroll = Math.max(0, Math.min(tasks.length - 1, this.sidebarScroll + delta));
+  }
+
   getRenderDebugState(): {
     taskCount: number;
     selectedIndex: number;
@@ -335,27 +376,20 @@ export class SubagentsHistoryPanel {
 
   render(width: number): string[] {
     const w = Math.max(40, width);
-    const bodyWidth = w;
+    this.lastRenderWidth = w;
     const configuredMaxLines = typeof this.maxLinesProvider === 'function' ? this.maxLinesProvider() : this.maxLinesProvider;
     const maxLines = Math.max(12, Math.floor(Number.isFinite(configuredMaxLines) ? configuredMaxLines : 42));
     const th = this.theme;
     const accent = (s: string) => themeAccent(th, s);
     const dim = (s: string) => themeDim(th, s);
-    const warn = (s: string) => themeWarning(th, s);
-    const ok = (s: string) => themeSuccess(th, s);
-    const err = (s: string) => themeError(th, s);
     const title = (s: string) => themeTitle(th, s);
-    const line = (s = '') => fitsWidth(s, bodyWidth, this.visibleWidth) ? s : this.truncateToWidth(s, bodyWidth);
     const border = (text: string) => themeFg(th, 'accent', text, CYAN);
-    const divider = line(border(BOX_CHARS.horizontal.repeat(bodyWidth)));
-    const sep = ` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `;
     const status = (task: SubagentTask) => themeStatus(th, task.status);
 
-    const lines: string[] = [];
-    const archPrefix = themeFg(th, 'accent', ARCH_ICON, CYAN);
-    lines.push(line(`${archPrefix} ${title('subagents')} ${dim('flow')} ${dim(`· ←/→ exec · ↑/↓ scroll · pgup/dn · ctrl+o expand · ctrl+t thinking · ${this.detailCancelShortcut} cancel active · esc/q close`)}`));
-    const topFrame = line(border(BOX_CHARS.topLeft + BOX_CHARS.horizontal.repeat(Math.max(0, bodyWidth - 2)) + BOX_CHARS.topRight));
-    lines.push(topFrame);
+    const isSplit = w >= 55;
+    const sidebarWidth = isSplit ? Math.max(18, Math.min(30, Math.floor(w * 0.25))) : 0;
+    this.lastSidebarWidth = sidebarWidth;
+    const rightWidth = isSplit ? Math.max(16, w - sidebarWidth - 7) : Math.max(16, w - 4);
 
     const tasks = this.tasks();
     if (this.initialSelectedTaskId) {
@@ -365,78 +399,199 @@ export class SubagentsHistoryPanel {
     }
     if (this.selected >= tasks.length) this.selected = Math.max(0, tasks.length - 1);
 
+    const rawLines: string[] = [];
+    const archPrefix = themeFg(th, 'accent', ARCH_ICON, CYAN);
+
     if (!tasks.length) {
-      lines.push(line(dim('No subagent tasks recorded in this session yet.')));
-      while (lines.length < maxLines) lines.push('');
-      const lineWidths = lines.map((entry) => {
-        try {
-          return this.visibleWidth(entry);
-        } catch {
-          return terminalVisibleWidth(entry);
-        }
-      });
-      this.lastRenderDebugState = {
-        configuredMaxLines: maxLines,
-        renderWidth: bodyWidth,
-        renderedLineCount: lines.length,
-        bodyHeight: Math.max(0, maxLines - 3),
-        maxVisibleWidth: lineWidths.reduce((max, value) => Math.max(max, value), 0),
-        widthViolationCount: lineWidths.filter((value) => value > bodyWidth).length,
-      };
+      // Empty state
+      const top = border(`${ROUNDED_BOX_CHARS.topLeft}${ROUNDED_BOX_CHARS.horizontal.repeat(w - 2)}${ROUNDED_BOX_CHARS.topRight}`);
+      rawLines.push(top);
+      rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(dim('No subagent tasks recorded in this session yet.'), w - 4)} ${border(ROUNDED_BOX_CHARS.vertical)}`);
+      while (rawLines.length < maxLines - 1) rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)}${' '.repeat(w - 2)}${border(ROUNDED_BOX_CHARS.vertical)}`);
+      const bottom = border(`${ROUNDED_BOX_CHARS.bottomLeft}${ROUNDED_BOX_CHARS.horizontal.repeat(w - 2)}${ROUNDED_BOX_CHARS.bottomRight}`);
+      rawLines.push(bottom);
+      const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
+      this.updateDebugState(maxLines, w, lines, Math.max(0, maxLines - 2));
       return lines;
     }
 
-    const task = this.resolveTaskForBody(tasks[this.selected]!);
+    const currentTask = this.resolveTaskForBody(tasks[this.selected]!);
     let contextWindow: number | undefined;
-    try { contextWindow = this.displayOptions.contextWindowForTask?.(task); } catch {}
-    const usage = formatUsage(task.usage, contextWindow);
+    try { contextWindow = this.displayOptions.contextWindowForTask?.(currentTask); } catch {}
+    const usage = formatUsage(currentTask.usage, contextWindow);
+    const duration = fmtDuration(currentTask);
     const timeout = formatTimeout(this.displayOptions.timeoutMs);
-    const stallTimeout = formatTimeout(this.displayOptions.stallTimeoutMs);
-    const cancelHint = (task.status === 'queued' || task.status === 'running') && this.detailCancelShortcut
-      ? ` ${dim(`(${this.detailCancelShortcut} cancel)`)}`
+    const timeoutHint = timeout ? ` (timeout ${timeout})` : '';
+    const stall = formatTimeout(this.displayOptions.stallTimeoutMs);
+    const stallHint = stall ? ` (stall ${stall})` : '';
+    const cancelDetailHint = (currentTask.status === 'queued' || currentTask.status === 'running') && this.detailCancelShortcut
+      ? `(${this.detailCancelShortcut} cancel)`
       : '';
-    const timeoutHint = timeout ? ` ${dim(`(timeout ${timeout})`)}` : '';
-    const stallHint = stallTimeout ? ` ${dim(`(stall ${stallTimeout})`)}` : '';
-    const lastActivity = [task.last_activity ?? 'n/a', task.last_activity_at ? dim(task.last_activity_at) : ''].filter(Boolean).join(' ');
-    const displayName = task.display_name?.trim();
-    lines.push(line(`${accent(`${this.selected + 1}/${tasks.length}`)}${sep}${dim('subagent:')} ${accent(task.agent)}${sep}${dim('status:')} ${status(task)}${sep}${dim('attempt:')} ${accent(String(task.attempt ?? 1))}${sep}${dim('effort:')} ${accent(task.effort ?? 'default/current')}${cancelHint}`));
-    lines.push(line(`${dim('model:')} ${task.model ?? 'default/current'}${displayName ? `${sep}${dim('name:')} ${accent(displayName)}` : ''}${sep}${dim('duration:')} ${fmtDuration(task)}${timeoutHint}`));
-    if (usage) lines.push(line(`${dim('usage:')} ${usage}`));
-    lines.push(line(`${dim('last:')} ${lastActivity}${stallHint}`));
-    lines.push(line(`${dim('task:')} ${clip(task.task, bodyWidth - 6)}`));
-    lines.push(this.taskStrip(bodyWidth));
-    lines.push(divider);
+    const cancelActiveHint = (currentTask.status === 'queued' || currentTask.status === 'running') && this.detailCancelShortcut
+      ? `${this.detailCancelShortcut} cancel active`
+      : '';
+    const lastActivity = currentTask.last_activity ? `${currentTask.last_activity}${stallHint}` : undefined;
 
-    const headerCount = lines.length;
-    const structuredBody = isValidThreadSnapshot(task.thread_snapshot);
-    const bodyEntries = this.bodyEntriesFor(task, bodyWidth);
-    // Pi components already return width-bounded visual lines. Do not re-wrap or
-    // restyle structured thread snapshots, otherwise component spacing, borders,
-    // ANSI styling, and tool differentiation collapse into plain text.
-    const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, bodyWidth);
-    const bodyHeight = Math.max(5, maxLines - headerCount - 2);
-    const maxScroll = Math.max(0, wrappedEntries.length - bodyHeight);
-    if (this.followTail || (this.lastMaxScroll > 0 && this.scroll >= this.lastMaxScroll)) this.scroll = maxScroll;
-    if (this.scroll > maxScroll) this.scroll = maxScroll;
-    this.lastMaxScroll = maxScroll;
-    const visible = wrappedEntries.slice(this.scroll, this.scroll + bodyHeight);
+    // Row 0: Top Frame with Rounded Corners, Title, Keybindings & Column Divider Connector
+    const leftTitle = `${archPrefix} ${title('subagents')}`;
+    const leftTitleVis = this.visibleWidth(leftTitle);
 
-    this.rowTaskMap.clear();
-    for (let i = 0; i < visible.length; i++) {
-      const entry = visible[i]!;
-      const terminalRow = headerCount + i;
-      if (entry.taskId) {
-        this.rowTaskMap.set(terminalRow, entry.taskId);
+    if (isSplit) {
+      // Left Top Segment: ╭─ leftTitle ─...─┬
+      const fillLeft = Math.max(0, sidebarWidth - leftTitleVis - 2);
+      const leftTopSegment = `${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${leftTitle} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillLeft))}${border(ROUNDED_BOX_CHARS.tDown)}`;
+
+      // Right Top Segment: ─ badge ─...─ closeBtn ─╮
+      const badge = `${accent(`${this.selected + 1}/${tasks.length}`)} ${accent(currentTask.agent)} · ${status(currentTask)}${duration ? ` · ${dim(duration)}` : ''}`;
+      const cancelActionText = cancelActiveHint ? `${cancelActiveHint} · ` : '';
+      const closeBtn = dim(`${cancelActionText}ctrl+o expand · ctrl+t thinking · [esc/q close]`);
+
+      const closeVis = this.visibleWidth(closeBtn);
+      const badgeVis = this.visibleWidth(badge);
+      let clippedBadge = badge;
+      if (badgeVis + closeVis + 3 > rightWidth) {
+        clippedBadge = this.truncateToWidth(badge, Math.max(10, rightWidth - closeVis - 4));
       }
-      lines.push(structuredBody ? line(entry.text) : this.renderFlowLine(entry.text, bodyWidth));
+      const midFill = Math.max(0, rightWidth - this.visibleWidth(clippedBadge) - closeVis - 3);
+      const rightTopSegment = `${border(ROUNDED_BOX_CHARS.horizontal)} ${clippedBadge} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`;
+      rawLines.push(`${leftTopSegment}${rightTopSegment}`);
+    } else {
+      const badge = `${accent(`${this.selected + 1}/${tasks.length}`)} ${accent(currentTask.agent)} · ${status(currentTask)}`;
+      const closeBtn = dim('[esc/q close]');
+      const closeVis = this.visibleWidth(closeBtn);
+      const badgeVis = this.visibleWidth(badge);
+      const midFill = Math.max(0, rightWidth - leftTitleVis - badgeVis - closeVis - 6);
+      rawLines.push(`${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${leftTitle} ${border(ROUNDED_BOX_CHARS.horizontal)} ${badge} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`);
     }
 
-    while (lines.length < maxLines - 1) lines.push('');
-    const position = wrappedEntries.length > bodyHeight ? ` ${this.scroll + 1}-${Math.min(wrappedEntries.length, this.scroll + bodyHeight)}/${wrappedEntries.length} ` : '';
-    const bottomFrame = bodyWidth >= position.length + 2
-      ? line(`${border(BOX_CHARS.bottomLeft + BOX_CHARS.horizontal.repeat(Math.max(0, bodyWidth - position.length - 2)))}${dim(position)}${border(BOX_CHARS.bottomRight)}`)
-      : line(`${dim('─'.repeat(Math.max(0, bodyWidth - position.length)))}${dim(position)}`);
-    lines.push(bottomFrame);
+    // Row 1: Subheader Row 1 (Agent, Status, Effort, Model, Duration)
+    const leftSubHeader1 = `${accent(`executions 1-${tasks.length}/${tasks.length}`)} `;
+    const rightSubHeader1 = [
+      `agent: ${accent(currentTask.agent)}`,
+      `status: ${status(currentTask)}`,
+      currentTask.effort ? `effort: ${accent(currentTask.effort)}${cancelDetailHint ? ` ${dim(cancelDetailHint)}` : ''}` : undefined,
+      currentTask.model ? `model: ${currentTask.model}` : undefined,
+      duration ? `duration: ${duration}${timeoutHint}` : undefined,
+      usage ? `usage: ${usage}` : undefined,
+    ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+
+    const subheaderLine1 = isSplit
+      ? `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader1, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`
+      : `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+    rawLines.push(subheaderLine1);
+
+    // Row 2: Subheader Row 2 (Usage, Last activity, Display Name, Task)
+    const displayName = currentTask.display_name?.trim();
+    const leftSubHeader2 = '';
+    const rightSubHeader2 = [
+      usage ? `usage: ${usage}` : undefined,
+      lastActivity ? `last: ${lastActivity}` : undefined,
+      displayName ? `name: ${accent(displayName)}` : undefined,
+      currentTask.task ? `task: ${clip(currentTask.task, Math.max(20, rightWidth - 30))}` : undefined,
+    ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+
+    const subheaderLine2 = isSplit
+      ? `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader2, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`
+      : `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+    rawLines.push(subheaderLine2);
+
+    // Row 3: Header Divider Row
+    const headerDivider = isSplit
+      ? `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.cross + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`
+      : `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`;
+    rawLines.push(headerDivider);
+
+    // Body Setup
+    const headerCount = rawLines.length; // 4 rows
+    const bodyHeight = Math.max(5, maxLines - headerCount - 1);
+
+    // Keep sidebar scroll focused on selected task
+    if (this.selected < this.sidebarScroll) this.sidebarScroll = this.selected;
+    if (this.selected >= this.sidebarScroll + bodyHeight) this.sidebarScroll = this.selected - bodyHeight + 1;
+    this.sidebarScroll = Math.max(0, Math.min(Math.max(0, tasks.length - bodyHeight), this.sidebarScroll));
+
+    // Prepare main view content
+    const structuredBody = isValidThreadSnapshot(currentTask.thread_snapshot);
+    const bodyEntries = this.bodyEntriesFor(currentTask, rightWidth);
+    const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, rightWidth);
+    const maxScroll = Math.max(0, wrappedEntries.length - bodyHeight);
+    if (this.followTail) this.scroll = maxScroll;
+    if (this.scroll > maxScroll) this.scroll = maxScroll;
+    this.lastMaxScroll = maxScroll;
+    const visibleEntries = wrappedEntries.slice(this.scroll, this.scroll + bodyHeight);
+
+    this.rowTaskMap.clear();
+
+    // Render Split-View Rows
+    for (let i = 0; i < bodyHeight; i++) {
+      const terminalRow = headerCount + i;
+
+      // Sidebar Column Cell
+      let leftCell = '';
+      if (isSplit) {
+        const sidebarTaskIdx = this.sidebarScroll + i;
+        let leftCellText = '';
+        if (sidebarTaskIdx < tasks.length) {
+          const t = tasks[sidebarTaskIdx]!;
+          const isSelected = sidebarTaskIdx === this.selected;
+          this.rowTaskMap.set(terminalRow, t.id);
+
+          const icon = isSelected ? '●' : '○';
+          const statusText = t.status;
+          const name = t.display_name?.trim() || t.agent;
+          const effortTag = t.effort ? ` effort:${t.effort}` : '';
+          const itemLabel = `${icon} ${name}:${statusText}${effortTag}`;
+          const clippedItem = this.truncateToWidth(itemLabel, sidebarWidth);
+          leftCellText = isSelected ? themeFg(th, 'warning', clippedItem, AMBER) : dim(clippedItem);
+        }
+        leftCell = this.padToWidth(leftCellText, sidebarWidth);
+      }
+
+      // Main View Column Cell
+      let rightCellText = '';
+      if (i < visibleEntries.length) {
+        const entry = visibleEntries[i]!;
+        if (entry.taskId) {
+          this.rowTaskMap.set(terminalRow, entry.taskId);
+        }
+        rightCellText = structuredBody ? entry.text : this.renderFlowLine(entry.text, rightWidth);
+      }
+      const rightCell = this.padToWidth(rightCellText, rightWidth);
+
+      const rowLine = isSplit
+        ? `${border(ROUNDED_BOX_CHARS.vertical)} ${leftCell} ${border(ROUNDED_BOX_CHARS.vertical)} ${rightCell} ${border(ROUNDED_BOX_CHARS.vertical)}`
+        : `${border(ROUNDED_BOX_CHARS.vertical)} ${rightCell} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+      rawLines.push(rowLine);
+    }
+
+    // Bottom Border with Rounded Corners, Scroll position & Shortcuts
+    const scrollPos = wrappedEntries.length > bodyHeight
+      ? `[${this.scroll + 1}-${Math.min(wrappedEntries.length, this.scroll + bodyHeight)}/${wrappedEntries.length}]`
+      : '';
+    const shortcuts = dim('←/→ exec · ↑/↓ scroll · ctrl+o expand · ctrl+t thinking');
+    const scrollBadge = scrollPos ? dim(`${scrollPos} `) : '';
+    const bottomItems = `${scrollBadge}${shortcuts}`;
+    const bottomVis = this.visibleWidth(bottomItems);
+    let rightBottomSegment: string;
+    if (bottomVis + 1 <= rightWidth) {
+      const fillBottom = Math.max(0, rightWidth - bottomVis - 1);
+      rightBottomSegment = `${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillBottom))} ${bottomItems} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
+    } else {
+      const clippedItems = this.truncateToWidth(bottomItems, Math.max(4, rightWidth - 2));
+      const fillBottom = Math.max(0, rightWidth - this.visibleWidth(clippedItems) - 1);
+      rightBottomSegment = `${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillBottom))} ${clippedItems} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
+    }
+    const bottomLine = isSplit
+      ? `${border(ROUNDED_BOX_CHARS.bottomLeft + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.tUp)}${rightBottomSegment}`
+      : `${border(ROUNDED_BOX_CHARS.bottomLeft)}${rightBottomSegment}`;
+    rawLines.push(bottomLine);
+
+    const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
+    this.updateDebugState(maxLines, w, lines, bodyHeight);
+    return lines;
+  }
+
+  private updateDebugState(maxLines: number, width: number, lines: string[], bodyHeight: number): void {
     const lineWidths = lines.map((entry) => {
       try {
         return this.visibleWidth(entry);
@@ -446,53 +601,17 @@ export class SubagentsHistoryPanel {
     });
     this.lastRenderDebugState = {
       configuredMaxLines: maxLines,
-      renderWidth: bodyWidth,
+      renderWidth: width,
       renderedLineCount: lines.length,
       bodyHeight,
       maxVisibleWidth: lineWidths.reduce((max, value) => Math.max(max, value), 0),
-      widthViolationCount: lineWidths.filter((value) => value > bodyWidth).length,
+      widthViolationCount: lineWidths.filter((value) => value > width).length,
     };
-    return lines;
   }
 
   cancelSelectedActiveTask(): void {
     const task = this.tasks()[this.selected];
     if (task && (task.status === 'queued' || task.status === 'running')) this.cancelSelectedTask?.(task.id);
-  }
-
-  private taskStrip(width: number): string {
-    const tasks = this.tasks();
-    const dim = (s: string) => this.theme?.fg?.('dim', s) ?? s;
-    const selected = (s: string) => this.theme?.fg?.('warning', s) ?? s;
-    const chip = (index: number): { raw: string; styled: string } => {
-      const task = tasks[index]!;
-      const raw = `${index === this.selected ? '●' : '○'} ${task.agent}:${task.status}${task.attempt ? ` attempt:${task.attempt}` : ''}${task.effort ? ` effort:${task.effort}` : ''}`;
-      return { raw, styled: index === this.selected ? selected(raw) : dim(raw) };
-    };
-    const selectedChip = chip(this.selected);
-    let start = this.selected;
-    let end = this.selected + 1;
-    let raw = selectedChip.raw;
-    while (start > 0 || end < tasks.length) {
-      const preferLeft = this.selected - start <= end - this.selected - 1;
-      const nextIndex = preferLeft && start > 0 ? start - 1 : end < tasks.length ? end : start > 0 ? start - 1 : -1;
-      if (nextIndex < 0) break;
-      const next = chip(nextIndex).raw;
-      const candidate = nextIndex < start ? `${next}  ${raw}` : `${raw}  ${next}`;
-      const prefix = `executions ${Math.min(start, nextIndex) + 1}-${Math.max(end, nextIndex + 1)}/${tasks.length}  `;
-      const leftIndicator = Math.min(start, nextIndex) > 0 ? '‹ ' : '';
-      const rightIndicator = Math.max(end, nextIndex + 1) < tasks.length ? ' ›' : '';
-      if (this.visibleWidth(`${prefix}${leftIndicator}${candidate}${rightIndicator}`) > width) break;
-      raw = candidate;
-      start = Math.min(start, nextIndex);
-      end = Math.max(end, nextIndex + 1);
-    }
-    const styledChips: string[] = [];
-    for (let i = start; i < end; i++) styledChips.push(chip(i).styled);
-    const prefix = dim(`executions ${start + 1}-${end}/${tasks.length}`);
-    const leftIndicator = start > 0 ? `${dim('‹')} ` : '';
-    const rightIndicator = end < tasks.length ? ` ${dim('›')}` : '';
-    return `${prefix}  ${leftIndicator}${styledChips.join('  ')}${rightIndicator}`;
   }
 
   private tasks(): SubagentTask[] {
@@ -525,14 +644,16 @@ export class SubagentsHistoryPanel {
     if (raw.startsWith('# ') || raw.startsWith('## ') || raw.startsWith('### ')) {
       const border = (t: string) => themeFg(th, 'accent', t, CYAN);
       const titleText = raw.replace(/^#+\s*/, '');
-      const heading = th?.bold?.(th?.fg?.('mdHeading', titleText) ?? titleText) ?? titleText;
+      const maxTitle = Math.max(4, width - 8);
+      const clippedTitle = this.truncateToWidth(titleText, maxTitle);
+      const heading = th?.bold?.(th?.fg?.('mdHeading', clippedTitle) ?? clippedTitle) ?? clippedTitle;
       const leftFrame = `${border(BOX_CHARS.topLeft + BOX_CHARS.horizontal + ' ')}${heading} `;
       const leftVisWidth = this.visibleWidth(leftFrame);
       const rightCorner = border(BOX_CHARS.topRight);
       const rightVisWidth = this.visibleWidth(rightCorner);
       const filler = Math.max(0, width - leftVisWidth - rightVisWidth);
       const framed = `${leftFrame}${border(BOX_CHARS.horizontal.repeat(filler))}${rightCorner}`;
-      return fitsWidth(framed, width, this.visibleWidth) ? framed : this.truncateToWidth(framed, width);
+      return framed;
     }
     if (raw.startsWith('  ')) {
       const clipped = this.truncateToWidth(raw, width);
@@ -808,8 +929,13 @@ export class SubagentsHistoryPanel {
   }
 
   private padToWidth(text: string, width: number): string {
+    const vis = this.visibleWidth(text);
+    if (vis <= width) {
+      return `${text}${' '.repeat(width - vis)}`;
+    }
     const clipped = this.truncateToWidth(text, width);
-    return `${clipped}${' '.repeat(Math.max(0, width - this.visibleWidth(clipped)))}`;
+    const clippedVis = this.visibleWidth(clipped);
+    return `${clipped}${' '.repeat(Math.max(0, width - clippedVis))}`;
   }
 
   private extractPromptTail(prompt: string): string {

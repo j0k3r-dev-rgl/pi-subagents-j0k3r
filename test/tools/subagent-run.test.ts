@@ -193,15 +193,12 @@ describe('subagent_run tool', () => {
     expect(result.content[0].text).not.toContain('subagent_continue');
     expect(result.details.results[0].result).toBe(rawResponse);
 
-    const collapsed = runTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(90).join('\n');
-    expect(collapsed).toContain('subagent: analyst');
-    expect(collapsed).toContain('ctrl+o to expand');
-    expect(collapsed).not.toContain('to=functions.memory_get');
-    expect(collapsed).not.toContain('id: subtask_');
-
-    const expanded = runTool.renderResult(result, { expanded: true, isPartial: false }, { fg: (_name: string, text: string) => text }).render(120).join('\n');
-    expect(expanded).toContain('Subagent response');
-    expect(expanded).toContain('to=functions.memory_get');
+    const renderedResult = runTool.renderResult(result, { expanded: false, isPartial: false }, { fg: (_name: string, text: string) => text }).render(90).join('\n');
+    expect(renderedResult).toContain('subagent: analyst');
+    expect(renderedResult).toContain('click to view execution');
+    expect(renderedResult).toContain('Subagent response');
+    expect(renderedResult).toContain('to=functions.memory_get');
+    expect(renderedResult).not.toContain('id: subtask_');
   });
 
   it('returns an error tool result without continuation guidance when continuation is disabled', async () => {
@@ -452,7 +449,7 @@ describe('subagent_run tool', () => {
     const rendered = env.stripAnsi(runTool.renderResult(result, { expanded: false }, { fg: (_n: string, t: string) => t }).render(120).join('\n'));
     expect(rendered).toContain('Friendly Test Name');
     expect(rendered).toContain('subagent: analyst');
-    expect(rendered).toContain('ctrl+o to expand');
+    expect(rendered).toContain('click to view execution');
     expect(rendered).not.toContain('id: subtask_');
     expect(rendered).not.toContain('subtask_analyst_');
 

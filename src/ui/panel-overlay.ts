@@ -68,6 +68,28 @@ export function resolveRegisteredToolDefinition(ctx: any, pi: any, name: string)
     ?? toolFromRegistry(ctx?.tools, name);
 }
 
+export type SubagentsPanelOpener = (taskId?: string) => Promise<void> | void;
+let activePanelOpener: SubagentsPanelOpener | undefined;
+let lastPanelOpenTime = 0;
+
+export function registerSubagentsPanelOpener(opener: SubagentsPanelOpener | undefined): void {
+  activePanelOpener = opener;
+  lastPanelOpenTime = 0;
+}
+
+export function resetSubagentsPanelOpenerStateForTests(): void {
+  lastPanelOpenTime = 0;
+}
+
+export function openSubagentsPanel(taskId?: string): void {
+  const now = Date.now();
+  if (now - lastPanelOpenTime < 600) return;
+  lastPanelOpenTime = now;
+  if (activePanelOpener) {
+    void activePanelOpener(taskId);
+  }
+}
+
 export async function showSubagentsPanel(input: {
   ctx: any;
   pi: any;
@@ -121,7 +143,7 @@ export async function showSubagentsPanel(input: {
             showImages: ctx?.showImages,
             imageWidthCells: ctx?.imageWidthCells,
           },
-          () => Math.max(12, (process.stdout.rows || 42) - 2),
+          () => Math.max(12, tui?.terminal?.rows ?? process.stdout.rows ?? 42),
           (id: string) => manager.getTask(id, cwd),
           selectedTaskId,
           (id: string) => manager.cancel(id, 'cancelled from subagents detail view'),

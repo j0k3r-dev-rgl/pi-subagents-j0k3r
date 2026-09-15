@@ -3,6 +3,33 @@ import { appendSubagentResumeGuidance, formatTaskLabel } from './tools/formattin
 import { wrapLineToWidth } from './text-width.js';
 import { ARCH_ICON, BOX_CHARS, CYAN, LIME, RED, electricBorder, padToWidth, themeAccent, themeBg, themeBold, themeDim, themeError, themeFg, themeStatus, themeSuccess, themeTitle, themeWarning, truncateToWidth, visibleWidth } from '../ui/theme.js';
 
+function formatErrorMetadataLines(task: any): string[] {
+  if (!task?.error_metadata) return [];
+  const safe = safeErrorMetadataDetails(task.error_metadata as any);
+  if (!safe || Object.keys(safe).length === 0) return [];
+  const lines: string[] = [];
+  lines.push(`- category: ${safe.category ?? 'unknown'}`);
+  if (safe.phase) lines.push(`- phase: ${safe.phase}`);
+  lines.push(`- retryable: ${safe.retryable ?? false}`);
+  if (safe.code && safe.code !== safe.category) lines.push(`- code: ${safe.code}`);
+  if (safe.source && typeof safe.source === 'object') {
+    const src = safe.source as Record<string, unknown>;
+    const srcParts: string[] = [];
+    if (typeof src.provider === 'string') srcParts.push(`provider=${src.provider}`);
+    if (typeof src.model === 'string') srcParts.push(`model=${src.model}`);
+    if (typeof src.tool === 'string') srcParts.push(`tool=${src.tool}`);
+    if (typeof src.operation === 'string') srcParts.push(`op=${src.operation}`);
+    if (srcParts.length) lines.push(`- source: ${srcParts.join(', ')}`);
+  }
+  if (safe.partial_result_available) lines.push(`- partial_result_available: true`);
+  if (safe.details && Object.keys(safe.details).length > 0) {
+    for (const [key, value] of Object.entries(safe.details)) {
+      lines.push(`- ${key}: ${value}`);
+    }
+  }
+  return lines;
+}
+
 export {
   ARCH_ICON,
   BOX_CHARS,
@@ -40,6 +67,10 @@ export function completionMessage(task: any): string {
     content.push('', '## response sent to the orchestrator', '', task.result);
   } else if (task.error) {
     content.push('', '## error', '', task.error);
+    const errorDetails = formatErrorMetadataLines(task);
+    if (errorDetails.length) {
+      content.push('', '## error details', ...errorDetails);
+    }
   }
   return appendSubagentResumeGuidance(content.join('\n'), [task], cwd);
 }
@@ -115,6 +146,14 @@ export function renderSubagentCompletionMessage(message: any, options: any, them
         { text: 'error', style: 'heading' },
         ...String(task.error).split('\n').map((line) => ({ text: line, style: 'body' as const })),
       );
+      const errorDetails = formatErrorMetadataLines(task);
+      if (errorDetails.length) {
+        sections.push(
+          { text: '', style: 'dim' },
+          { text: 'error details', style: 'heading' },
+          ...errorDetails.map((line) => ({ text: line, style: 'body' as const })),
+        );
+      }
     }
   }
   const color = (section: { text: string; style?: 'label' | 'status' | 'dim' | 'body' | 'heading' }, text: string) => {

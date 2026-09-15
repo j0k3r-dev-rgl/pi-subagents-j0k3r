@@ -4,6 +4,7 @@ import { clip, formatTaskLabel, formatUsage, hasAgentResponse, modelEffortLine, 
 import { resolveExpandHint } from './expansion-hint.js';
 import { taskFromDetails } from '../result-details.js';
 import { ARCH_ICON, CYAN, themeAccent, themeDim, themeError, themeFg, themeStatus, themeTitle } from '../completion-message.js';
+import { openSubagentsPanel } from '../panel-opener.js';
 
 export function renderSubagentStatusCall(_args?: any, _theme?: any) {
   return emptyComponent();
@@ -72,5 +73,6 @@ export function renderSubagentStatusResult(result: any, options: any, theme: any
     title,
     theme,
     wrapped: true,
+    onClick: task?.id ? () => openSubagentsPanel(task.id) : undefined,
   });
 }

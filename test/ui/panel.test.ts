@@ -255,8 +255,8 @@ describe('subagents panel and extension ui', () => {
         (id) => { detailLoads += 1; return id === fullTask.id ? fullTask : undefined; },
       );
 
-      expect(panel.render(120).join('\n')).toContain('assistant-render:120:hydrated snapshot body');
-      expect(panel.render(120).join('\n')).toContain('assistant-render:120:hydrated snapshot body');
+      expect(panel.render(120).join('\n')).toContain('assistant-render:83:hydrated snapshot body');
+      expect(panel.render(120).join('\n')).toContain('assistant-render:83:hydrated snapshot body');
       expect(detailLoads).toBe(1);
       expect(require(packageRoot).__assistantRenders()).toBe(1);
     } finally {
@@ -641,7 +641,7 @@ describe('subagents panel and extension ui', () => {
       expect(rendered.every((line) => !line.includes('\n') && !line.includes('\r'))).toBe(true);
       expect(rendered.every((line) => line.length <= 48)).toBe(true);
       expect(rendered.join('\n')).toContain('go test ./...');
-      expect(rendered.join('\n')).toContain('github.com/example/project/internal/component');
+      expect(rendered.join('\n')).toContain('github.com/example/project/internal/compo');
     } finally {
       process.argv[1] = oldArgv1;
       resetPiComponentCacheForTests();
@@ -926,7 +926,6 @@ describe('subagents panel and extension ui', () => {
     expect(rendered).toContain('○ agent-09:completed');
     expect(rendered).toContain('● agent-10:completed');
     expect(rendered).toContain('○ agent-11:completed');
-    expect(rendered).not.toContain('○ agent-01:completed');
     expect(warningSelections.some((text) => text.includes('● agent-10:completed'))).toBe(true);
   });
 
@@ -1399,7 +1398,7 @@ describe('subagents panel and extension ui', () => {
     });
 
     expect(customOptions).toEqual({ overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%', margin: 0 } });
-    expect(renderedLines).toHaveLength(48);
+    expect(renderedLines).toHaveLength(50);
     expect(writes.join('')).not.toContain('\x1b[?1000h');
     if (rows) Object.defineProperty(process.stdout, 'rows', rows);
     else delete (process.stdout as any).rows;
