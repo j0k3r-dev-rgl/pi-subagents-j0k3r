@@ -317,16 +317,16 @@ function loadPiComponents(): Record<string, any> | undefined {
   if (injectedPiComponents !== undefined) return injectedPiComponents;
   if (piComponents !== undefined) return piComponents;
   const candidates = [
-    () => require('@earendil-works/pi-coding-agent') as Record<string, any>,
+    () => {
+      const packageRoot = findRunningPiPackageRoot();
+      return packageRoot ? require(packageRoot) as Record<string, any> : undefined;
+    },
     () => {
       const entrypoint = runningPiEntrypoint();
       if (!entrypoint) return undefined;
       return createRequire(entrypoint)('@earendil-works/pi-coding-agent') as Record<string, any>;
     },
-    () => {
-      const packageRoot = findRunningPiPackageRoot();
-      return packageRoot ? require(packageRoot) as Record<string, any> : undefined;
-    },
+    () => require('@earendil-works/pi-coding-agent') as Record<string, any>,
   ];
   for (const candidate of candidates) {
     try {
@@ -351,39 +351,46 @@ async function importPiComponentCandidate(filePath: string | undefined): Promise
 }
 
 async function loadPiComponentsAsync(): Promise<Record<string, any> | undefined> {
+  const packageRoot = findRunningPiPackageRoot();
+  if (packageRoot) {
+    const chunksDir = path.join(packageRoot, 'dist', 'bundle', 'chunks');
+    try {
+      if (fs.existsSync(chunksDir)) {
+        for (const entry of fs.readdirSync(chunksDir)) {
+          if (!entry.endsWith('.js')) continue;
+          const loaded = await importPiComponentCandidate(path.join(chunksDir, entry));
+          if (loaded) return loaded;
+        }
+      }
+    } catch {}
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')) as { main?: string };
+      const loaded = await importPiComponentCandidate(path.join(packageRoot, parsed.main ?? 'dist/index.js'));
+      if (loaded) return loaded;
+    } catch {}
+  }
+
   const spec = '@earendil-works/pi-coding-agent';
   try {
     const loaded = await import(spec);
     if (hasUsablePiComponents(loaded)) return loaded;
   } catch {}
 
-  const packageRoot = findRunningPiPackageRoot();
-  if (!packageRoot) return undefined;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')) as { main?: string };
-    const loaded = await importPiComponentCandidate(path.join(packageRoot, parsed.main ?? 'dist/index.js'));
-    if (loaded) return loaded;
-  } catch {}
-
-  const chunksDir = path.join(packageRoot, 'dist', 'bundle', 'chunks');
-  try {
-    for (const entry of fs.readdirSync(chunksDir)) {
-      if (!entry.endsWith('.js')) continue;
-      const loaded = await importPiComponentCandidate(path.join(chunksDir, entry));
-      if (loaded) return loaded;
-    }
-  } catch {}
   return undefined;
 }
 
 export async function preloadPiComponentsForSubagentRendering(): Promise<boolean> {
-  if (loadPiComponents()) return true;
+  if (piComponents !== undefined && hasUsablePiComponents(piComponents)) return true;
   const loaded = await loadPiComponentsAsync();
-  if (!loaded) return false;
-  piComponents = loaded;
-  builtInToolDefinitionCache.clear();
-  toolComponentCacheByTask.clear();
-  return true;
+  if (loaded) {
+    piComponents = loaded;
+    builtInToolDefinitionCache.clear();
+    toolComponentCacheByTask.clear();
+    return true;
+  }
+  if (loadPiComponents()) return true;
+  return false;
 }
 
 function debugLog(context: Pick<SubagentThreadRenderContext, 'cwd'> | undefined, scope: string, data: unknown): void {
