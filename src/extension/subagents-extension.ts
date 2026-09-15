@@ -1,5 +1,6 @@
 import { readSubagentsConfig, subagentSourceWarnings } from '../config.js';
 import { SubagentManager } from '../manager.js';
+import { createSubagentsService, publishSubagentsService, unpublishSubagentsService } from '../service.js';
 import { runSubagentModelsCommand } from '../model-profiles-ui.js';
 import { renderSubagentCompletionMessage, sendSubagentCompletionMessage } from '../render/completion-message.js';
 import { registerSubagentTools, triggerClaudeBackgroundHandoff } from '../tools.js';
@@ -49,6 +50,7 @@ export default function subagentsExtension(pi: any): void {
     (active) => { setWidgetInputSuspended('interaction', active); },
   );
   registerSubagentTools(pi, manager, process.cwd());
+  const service = createSubagentsService(manager);
 
   let widgetCtx: any;
   let widgetRequestRender: (() => void) | undefined;
@@ -117,6 +119,7 @@ export default function subagentsExtension(pi: any): void {
     manager.reconcileOrphanedTasks(cwd);
     for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
     widgetCtx = ctx;
+    publishSubagentsService(service);
     registerSubagentsPanelOpener(async (taskId?: string) => {
       const currentCtx = widgetCtx ?? ctx;
       if (!currentCtx) return;
@@ -137,6 +140,7 @@ export default function subagentsExtension(pi: any): void {
 
   pi.on?.('session_shutdown', () => {
     activeSessionId = undefined;
+    unpublishSubagentsService(service);
     registerSubagentsPanelOpener(undefined);
     manager.cancelRunning('Pi session shutdown');
     clearClaudeBackgroundWidget();

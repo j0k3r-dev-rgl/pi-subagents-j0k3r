@@ -451,6 +451,60 @@ Live-message requirements, visibility, and lifecycle:
 - Message text is private to the owning task detail timeline and persisted task-detail snapshot. Lists, widgets, completion notifications, result summaries, logs, and unrelated parent sessions expose only safe counts/metadata.
 - Live task-mode rendering shows the latest three safe activity labels; live background rendering shows one current activity only.
 
+## For Extension Authors (cross-extension service API)
+
+Companion Pi extensions can delegate work to a configured subagent directly,
+without routing through the parent model. The package publishes a small
+versioned service facade over the same live `SubagentManager` used by the
+model-facing tools and UI, so service-launched tasks share history,
+concurrency, cancellation, and tool policy with normal runs.
+
+Integrate defensively: `pi-subagents-j0k3r` is an optional peer, and the
+service is only present while this extension is active in the session.
+
+```ts
+// Optional dynamic import: never a hard dependency.
+const j0k3r = await import("pi-subagents-j0k3r").catch(() => undefined);
+const service = j0k3r?.getSubagentsService?.();
+if (!service || service.apiVersion !== 1) {
+  return fallbackWithoutDirectDelegation(); // absent, inactive, or incompatible
+}
+
+// 1. Check the named agent exists and can really do the job.
+//    effectiveTools reflects defaults, wildcard expansion against active
+//    parent tools, and blocked-tool rules — not just the YAML text.
+const agent = service.describeAgent("researcher", ctx);
+if (!agent || !agent.effectiveTools.includes("web_search")) {
+  return fallbackWithoutDirectDelegation();
+}
+
+// 2. Run in task mode and wait for the bounded result snapshot.
+const controller = new AbortController();
+const run = await service.run(
+  { agent: "researcher", task: "Summarize the migration guide.", mode: "task" },
+  ctx,
+  {
+    signal: controller.signal,
+    onUpdate: (tasks) => showProgress(tasks.map((task) => task.last_activity)),
+  },
+);
+
+// 3. Look up or cancel later through the same manager record.
+service.getTask(run.id);
+service.cancel(run.id, "no longer needed");
+```
+
+Rules:
+
+- Run named agent definitions only. The service accepts no per-call
+  tool/model overrides; definition and `subagents.json` policy stay
+  authoritative, so a worker stays read-only when its allowlist says so.
+- Returned snapshots are bounded by-value copies. They never expose
+  prompts, transcripts, nested-session paths, or manager internals.
+- Task-mode runs return to the caller without an extra parent orchestration
+  turn. `background` mode stays available but keeps the normal j0k3r
+  parent completion notification behavior.
+
 ## Commands and shortcuts
 
 | Entry point | Description |
