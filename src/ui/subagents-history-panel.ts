@@ -172,6 +172,10 @@ export class SubagentsHistoryPanel {
   private rowTaskMap = new Map<number, string>();
   private lastSidebarWidth = 26;
   private lastRenderWidth = 100;
+  private lastIsSplit = true;
+  private lastListStartRow = -1;
+  private lastListEndRow = -1;
+  private lastSelectedTaskIdx = -1;
   private lastRenderDebugState?: {
     configuredMaxLines: number;
     renderWidth: number;
@@ -219,10 +223,18 @@ export class SubagentsHistoryPanel {
     if (event.type === 'wheel') {
       const delta = Number(event.wheelDelta ?? 0);
       if (!Number.isFinite(delta) || delta === 0) return undefined;
-      if (col <= this.lastSidebarWidth + 2 && event.col !== undefined) {
-        this.sidebarScrollBy(delta);
+      if (this.lastIsSplit) {
+        if (col <= this.lastSidebarWidth + 2 && event.col !== undefined) {
+          this.sidebarScrollBy(delta);
+        } else {
+          this.scrollBy(delta);
+        }
       } else {
-        this.scrollBy(delta);
+        if (this.lastListStartRow >= 0 && row >= this.lastListStartRow && row <= this.lastListEndRow) {
+          this.sidebarScrollBy(delta);
+        } else {
+          this.scrollBy(delta);
+        }
       }
       return { handled: true, render: true };
     }
@@ -230,8 +242,13 @@ export class SubagentsHistoryPanel {
     const isLeftClick = event.type === 'click' || (!event.type && (event.button === 'left' || event.button === undefined));
     if (!isLeftClick) return undefined;
 
-    // Header close click [esc/q close]
-    if (row === 0 && col >= Math.max(0, this.lastRenderWidth - 16) && event.col !== undefined) {
+    // Header or footer close click [✕ Cerrar]
+    const lastRowIndex = (this.lastRenderDebugState?.renderedLineCount ?? 0) - 1;
+    const isTopHeaderRow = row === 0;
+    const isBottomFooterRow = lastRowIndex > 0 && row === lastRowIndex;
+    const isCloseCol = col >= Math.max(0, this.lastRenderWidth - 16);
+
+    if ((isTopHeaderRow || isBottomFooterRow) && isCloseCol) {
       this.done();
       return { handled: true, render: true };
     }
@@ -386,7 +403,8 @@ export class SubagentsHistoryPanel {
     const border = (text: string) => themeFg(th, 'accent', text, CYAN);
     const status = (task: SubagentTask) => themeStatus(th, task.status);
 
-    const isSplit = w >= 55;
+    const isSplit = w >= 90;
+    this.lastIsSplit = isSplit;
     const sidebarWidth = isSplit ? Math.max(18, Math.min(30, Math.floor(w * 0.25))) : 0;
     this.lastSidebarWidth = sidebarWidth;
     const rightWidth = isSplit ? Math.max(16, w - sidebarWidth - 7) : Math.max(16, w - 4);
@@ -401,14 +419,21 @@ export class SubagentsHistoryPanel {
 
     const rawLines: string[] = [];
     const archPrefix = themeFg(th, 'accent', ARCH_ICON, CYAN);
+    const closeBtnText = '[✕ Cerrar]';
+    const closeBtn = themeFg(th, 'error', closeBtnText, RED);
+    const closeVis = this.visibleWidth(closeBtn);
 
     if (!tasks.length) {
       // Empty state
-      const top = border(`${ROUNDED_BOX_CHARS.topLeft}${ROUNDED_BOX_CHARS.horizontal.repeat(w - 2)}${ROUNDED_BOX_CHARS.topRight}`);
+      const topTitle = `${archPrefix} ${title('subagents')}`;
+      const topTitleVis = this.visibleWidth(topTitle);
+      const topFill = Math.max(0, w - topTitleVis - closeVis - 8);
+      const top = `${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${topTitle} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(topFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`;
       rawLines.push(top);
       rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(dim('No subagent tasks recorded in this session yet.'), w - 4)} ${border(ROUNDED_BOX_CHARS.vertical)}`);
       while (rawLines.length < maxLines - 1) rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)}${' '.repeat(w - 2)}${border(ROUNDED_BOX_CHARS.vertical)}`);
-      const bottom = border(`${ROUNDED_BOX_CHARS.bottomLeft}${ROUNDED_BOX_CHARS.horizontal.repeat(w - 2)}${ROUNDED_BOX_CHARS.bottomRight}`);
+      const bottomFill = Math.max(0, w - closeVis - 5);
+      const bottom = `${border(ROUNDED_BOX_CHARS.bottomLeft + ROUNDED_BOX_CHARS.horizontal.repeat(bottomFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
       rawLines.push(bottom);
       const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
       this.updateDebugState(maxLines, w, lines, Math.max(0, maxLines - 2));
@@ -438,97 +463,103 @@ export class SubagentsHistoryPanel {
 
     if (isSplit) {
       // Left Top Segment: ╭─ leftTitle ─...─┬
-      const fillLeft = Math.max(0, sidebarWidth - leftTitleVis - 2);
+      const fillLeft = Math.max(0, sidebarWidth + 2 - leftTitleVis - 3);
       const leftTopSegment = `${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${leftTitle} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillLeft))}${border(ROUNDED_BOX_CHARS.tDown)}`;
 
       // Right Top Segment: ─ badge ─...─ closeBtn ─╮
       const badge = `${accent(`${this.selected + 1}/${tasks.length}`)} ${accent(currentTask.agent)} · ${status(currentTask)}${duration ? ` · ${dim(duration)}` : ''}`;
       const cancelActionText = cancelActiveHint ? `${cancelActiveHint} · ` : '';
-      const closeBtn = dim(`${cancelActionText}ctrl+o expand · ctrl+t thinking · [esc/q close]`);
+      const shortcutsText = dim(`${cancelActionText}ctrl+o expand · ctrl+t thinking · `);
+      const rightHeaderItems = `${shortcutsText}${closeBtn}`;
 
-      const closeVis = this.visibleWidth(closeBtn);
+      const rightHeaderVis = this.visibleWidth(rightHeaderItems);
       const badgeVis = this.visibleWidth(badge);
       let clippedBadge = badge;
-      if (badgeVis + closeVis + 3 > rightWidth) {
-        clippedBadge = this.truncateToWidth(badge, Math.max(10, rightWidth - closeVis - 4));
+      const maxBadgeVis = Math.max(10, rightWidth - rightHeaderVis - 4);
+      if (badgeVis + rightHeaderVis + 4 > rightWidth) {
+        clippedBadge = this.truncateToWidth(badge, maxBadgeVis);
       }
-      const midFill = Math.max(0, rightWidth - this.visibleWidth(clippedBadge) - closeVis - 3);
-      const rightTopSegment = `${border(ROUNDED_BOX_CHARS.horizontal)} ${clippedBadge} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`;
+      const midFill = Math.max(0, rightWidth - 4 - this.visibleWidth(clippedBadge) - rightHeaderVis);
+      const rightTopSegment = `${border(ROUNDED_BOX_CHARS.horizontal)} ${clippedBadge} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${rightHeaderItems} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`;
       rawLines.push(`${leftTopSegment}${rightTopSegment}`);
     } else {
-      const badge = `${accent(`${this.selected + 1}/${tasks.length}`)} ${accent(currentTask.agent)} · ${status(currentTask)}`;
-      const closeBtn = dim('[esc/q close]');
-      const closeVis = this.visibleWidth(closeBtn);
-      const badgeVis = this.visibleWidth(badge);
-      const midFill = Math.max(0, rightWidth - leftTitleVis - badgeVis - closeVis - 6);
-      rawLines.push(`${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${leftTitle} ${border(ROUNDED_BOX_CHARS.horizontal)} ${badge} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`);
+      let displayTitle = leftTitle;
+      const maxTitleVis = Math.max(4, w - closeVis - 8);
+      if (leftTitleVis > maxTitleVis) {
+        displayTitle = this.truncateToWidth(leftTitle, maxTitleVis);
+      }
+      let titleVis = this.visibleWidth(displayTitle);
+      if (titleVis > maxTitleVis) {
+        displayTitle = this.truncateToWidth(displayTitle, maxTitleVis);
+        titleVis = this.visibleWidth(displayTitle);
+      }
+      const midFill = Math.max(0, w - titleVis - closeVis - 8);
+      rawLines.push(`${border(ROUNDED_BOX_CHARS.topLeft + ROUNDED_BOX_CHARS.horizontal)} ${displayTitle} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(midFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.topRight)}`);
     }
 
-    // Row 1: Subheader Row 1 (Agent, Status, Effort, Model, Duration)
-    const leftSubHeader1 = `${accent(`executions 1-${tasks.length}/${tasks.length}`)} `;
-    const rightSubHeader1 = [
-      `agent: ${accent(currentTask.agent)}`,
-      `status: ${status(currentTask)}`,
-      currentTask.effort ? `effort: ${accent(currentTask.effort)}${cancelDetailHint ? ` ${dim(cancelDetailHint)}` : ''}` : undefined,
-      currentTask.model ? `model: ${currentTask.model}` : undefined,
-      duration ? `duration: ${duration}${timeoutHint}` : undefined,
-      usage ? `usage: ${usage}` : undefined,
-    ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+    if (isSplit) {
+      // Row 1: Subheader Row 1 (Agent, Status, Effort, Model, Duration)
+      const leftSubHeader1 = `${accent(`executions 1-${tasks.length}/${tasks.length}`)} `;
+      const rightSubHeader1 = [
+        `agent: ${accent(currentTask.agent)}`,
+        `status: ${status(currentTask)}`,
+        currentTask.effort ? `effort: ${accent(currentTask.effort)}${cancelDetailHint ? ` ${dim(cancelDetailHint)}` : ''}` : undefined,
+        currentTask.model ? `model: ${currentTask.model}` : undefined,
+        duration ? `duration: ${duration}${timeoutHint}` : undefined,
+        usage ? `usage: ${usage}` : undefined,
+      ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
 
-    const subheaderLine1 = isSplit
-      ? `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader1, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`
-      : `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
-    rawLines.push(subheaderLine1);
+      const subheaderLine1 = `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader1, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+      rawLines.push(subheaderLine1);
 
-    // Row 2: Subheader Row 2 (Usage, Last activity, Display Name, Task)
-    const displayName = currentTask.display_name?.trim();
-    const leftSubHeader2 = '';
-    const rightSubHeader2 = [
-      usage ? `usage: ${usage}` : undefined,
-      lastActivity ? `last: ${lastActivity}` : undefined,
-      displayName ? `name: ${accent(displayName)}` : undefined,
-      currentTask.task ? `task: ${clip(currentTask.task, Math.max(20, rightWidth - 30))}` : undefined,
-    ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+      // Row 2: Subheader Row 2 (Usage, Last activity, Display Name, Task)
+      const displayName = currentTask.display_name?.trim();
+      const leftSubHeader2 = '';
+      const rightSubHeader2 = [
+        usage ? `usage: ${usage}` : undefined,
+        lastActivity ? `last: ${lastActivity}` : undefined,
+        displayName ? `name: ${accent(displayName)}` : undefined,
+        currentTask.task ? `task: ${clip(currentTask.task, Math.max(20, rightWidth - 30))}` : undefined,
+      ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
 
-    const subheaderLine2 = isSplit
-      ? `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader2, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`
-      : `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
-    rawLines.push(subheaderLine2);
+      const subheaderLine2 = `${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(leftSubHeader2, sidebarWidth)} ${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(rightSubHeader2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+      rawLines.push(subheaderLine2);
 
-    // Row 3: Header Divider Row
-    const headerDivider = isSplit
-      ? `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.cross + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`
-      : `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`;
-    rawLines.push(headerDivider);
+      // Row 3: Header Divider Row
+      const headerDivider = `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.cross + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`;
+      rawLines.push(headerDivider);
 
-    // Body Setup
-    const headerCount = rawLines.length; // 4 rows
-    const bodyHeight = Math.max(5, maxLines - headerCount - 1);
+      // Body Setup
+      this.lastListStartRow = -1;
+      this.lastListEndRow = -1;
+      const headerCount = rawLines.length; // 4 rows
+      const bodyHeight = Math.max(5, maxLines - headerCount - 1);
 
-    // Keep sidebar scroll focused on selected task
-    if (this.selected < this.sidebarScroll) this.sidebarScroll = this.selected;
-    if (this.selected >= this.sidebarScroll + bodyHeight) this.sidebarScroll = this.selected - bodyHeight + 1;
-    this.sidebarScroll = Math.max(0, Math.min(Math.max(0, tasks.length - bodyHeight), this.sidebarScroll));
+      // Keep sidebar scroll focused on selected task
+      if (this.selected !== this.lastSelectedTaskIdx) {
+        if (this.selected < this.sidebarScroll) this.sidebarScroll = this.selected;
+        if (this.selected >= this.sidebarScroll + bodyHeight) this.sidebarScroll = this.selected - bodyHeight + 1;
+        this.lastSelectedTaskIdx = this.selected;
+      }
+      this.sidebarScroll = Math.max(0, Math.min(Math.max(0, tasks.length - bodyHeight), this.sidebarScroll));
 
-    // Prepare main view content
-    const structuredBody = isValidThreadSnapshot(currentTask.thread_snapshot);
-    const bodyEntries = this.bodyEntriesFor(currentTask, rightWidth);
-    const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, rightWidth);
-    const maxScroll = Math.max(0, wrappedEntries.length - bodyHeight);
-    if (this.followTail) this.scroll = maxScroll;
-    if (this.scroll > maxScroll) this.scroll = maxScroll;
-    this.lastMaxScroll = maxScroll;
-    const visibleEntries = wrappedEntries.slice(this.scroll, this.scroll + bodyHeight);
+      // Prepare main view content
+      const structuredBody = isValidThreadSnapshot(currentTask.thread_snapshot);
+      const bodyEntries = this.bodyEntriesFor(currentTask, rightWidth);
+      const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, rightWidth);
+      const maxScroll = Math.max(0, wrappedEntries.length - bodyHeight);
+      if (this.followTail) this.scroll = maxScroll;
+      if (this.scroll > maxScroll) this.scroll = maxScroll;
+      this.lastMaxScroll = maxScroll;
+      const visibleEntries = wrappedEntries.slice(this.scroll, this.scroll + bodyHeight);
 
-    this.rowTaskMap.clear();
+      this.rowTaskMap.clear();
 
-    // Render Split-View Rows
-    for (let i = 0; i < bodyHeight; i++) {
-      const terminalRow = headerCount + i;
+      // Render Split-View Rows
+      for (let i = 0; i < bodyHeight; i++) {
+        const terminalRow = headerCount + i;
 
-      // Sidebar Column Cell
-      let leftCell = '';
-      if (isSplit) {
+        // Sidebar Column Cell
         const sidebarTaskIdx = this.sidebarScroll + i;
         let leftCellText = '';
         if (sidebarTaskIdx < tasks.length) {
@@ -544,51 +575,175 @@ export class SubagentsHistoryPanel {
           const clippedItem = this.truncateToWidth(itemLabel, sidebarWidth);
           leftCellText = isSelected ? themeFg(th, 'warning', clippedItem, AMBER) : dim(clippedItem);
         }
-        leftCell = this.padToWidth(leftCellText, sidebarWidth);
-      }
+        const leftCell = this.padToWidth(leftCellText, sidebarWidth);
 
-      // Main View Column Cell
-      let rightCellText = '';
-      if (i < visibleEntries.length) {
-        const entry = visibleEntries[i]!;
-        if (entry.taskId) {
-          this.rowTaskMap.set(terminalRow, entry.taskId);
+        // Main View Column Cell
+        let rightCellText = '';
+        if (i < visibleEntries.length) {
+          const entry = visibleEntries[i]!;
+          if (entry.taskId) {
+            this.rowTaskMap.set(terminalRow, entry.taskId);
+          }
+          rightCellText = structuredBody ? entry.text : this.renderFlowLine(entry.text, rightWidth);
         }
-        rightCellText = structuredBody ? entry.text : this.renderFlowLine(entry.text, rightWidth);
+        const rightCell = this.padToWidth(rightCellText, rightWidth);
+
+        const rowLine = `${border(ROUNDED_BOX_CHARS.vertical)} ${leftCell} ${border(ROUNDED_BOX_CHARS.vertical)} ${rightCell} ${border(ROUNDED_BOX_CHARS.vertical)}`;
+        rawLines.push(rowLine);
       }
-      const rightCell = this.padToWidth(rightCellText, rightWidth);
 
-      const rowLine = isSplit
-        ? `${border(ROUNDED_BOX_CHARS.vertical)} ${leftCell} ${border(ROUNDED_BOX_CHARS.vertical)} ${rightCell} ${border(ROUNDED_BOX_CHARS.vertical)}`
-        : `${border(ROUNDED_BOX_CHARS.vertical)} ${rightCell} ${border(ROUNDED_BOX_CHARS.vertical)}`;
-      rawLines.push(rowLine);
-    }
+      // Bottom Border with Rounded Corners, Scroll position & Shortcuts & close button
+      const scrollPos = wrappedEntries.length > bodyHeight
+        ? `[${this.scroll + 1}-${Math.min(wrappedEntries.length, this.scroll + bodyHeight)}/${wrappedEntries.length}]`
+        : '';
+      const shortcuts = dim('←/→ exec · ↑/↓ scroll · ctrl+o expand · ctrl+t thinking');
+      const scrollBadge = scrollPos ? dim(`${scrollPos} `) : '';
+      const bottomItems = `${scrollBadge}${shortcuts}`;
+      const bottomVis = this.visibleWidth(bottomItems);
+      let rightBottomSegment: string;
+      const maxShortcutsVis = Math.max(4, rightWidth - closeVis - 4);
+      let clippedItems = bottomItems;
+      if (bottomVis + closeVis + 4 > rightWidth) {
+        clippedItems = this.truncateToWidth(bottomItems, maxShortcutsVis);
+      }
+      const fillBottom = Math.max(0, rightWidth - 4 - this.visibleWidth(clippedItems) - closeVis);
+      rightBottomSegment = `${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillBottom))} ${clippedItems} ${border(ROUNDED_BOX_CHARS.horizontal)} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
+      const bottomLine = `${border(ROUNDED_BOX_CHARS.bottomLeft + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.tUp)}${rightBottomSegment}`;
+      rawLines.push(bottomLine);
 
-    // Bottom Border with Rounded Corners, Scroll position & Shortcuts
-    const scrollPos = wrappedEntries.length > bodyHeight
-      ? `[${this.scroll + 1}-${Math.min(wrappedEntries.length, this.scroll + bodyHeight)}/${wrappedEntries.length}]`
-      : '';
-    const shortcuts = dim('←/→ exec · ↑/↓ scroll · ctrl+o expand · ctrl+t thinking');
-    const scrollBadge = scrollPos ? dim(`${scrollPos} `) : '';
-    const bottomItems = `${scrollBadge}${shortcuts}`;
-    const bottomVis = this.visibleWidth(bottomItems);
-    let rightBottomSegment: string;
-    if (bottomVis + 1 <= rightWidth) {
-      const fillBottom = Math.max(0, rightWidth - bottomVis - 1);
-      rightBottomSegment = `${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillBottom))} ${bottomItems} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
+      const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
+      this.updateDebugState(maxLines, w, lines, bodyHeight);
+      return lines;
     } else {
-      const clippedItems = this.truncateToWidth(bottomItems, Math.max(4, rightWidth - 2));
-      const fillBottom = Math.max(0, rightWidth - this.visibleWidth(clippedItems) - 1);
-      rightBottomSegment = `${border(ROUNDED_BOX_CHARS.horizontal.repeat(fillBottom))} ${clippedItems} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
-    }
-    const bottomLine = isSplit
-      ? `${border(ROUNDED_BOX_CHARS.bottomLeft + ROUNDED_BOX_CHARS.horizontal.repeat(sidebarWidth + 2) + ROUNDED_BOX_CHARS.tUp)}${rightBottomSegment}`
-      : `${border(ROUNDED_BOX_CHARS.bottomLeft)}${rightBottomSegment}`;
-    rawLines.push(bottomLine);
+      // Narrow Mode (Stacked View)
+      // Row 1: Selected task summary
+      const subItems = [
+        `${accent(`${this.selected + 1}/${tasks.length}`)}`,
+        `agent: ${accent(currentTask.agent)}`,
+        `status: ${status(currentTask)}`,
+        duration ? `duration: ${duration}` : undefined,
+        currentTask.effort ? `effort: ${accent(currentTask.effort)}` : undefined,
+      ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+      const clippedSub1 = this.truncateToWidth(subItems, rightWidth);
+      rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(clippedSub1, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`);
 
-    const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
-    this.updateDebugState(maxLines, w, lines, bodyHeight);
-    return lines;
+      // Row 2: Task or details
+      const displayName = currentTask.display_name?.trim();
+      let taskText = (currentTask.task || '').trim().replace(/\s+/g, ' ');
+      if (displayName && taskText.toLowerCase().startsWith(displayName.toLowerCase())) {
+        taskText = taskText.slice(displayName.length).replace(/^[:\s\-–—]+/, '').trim();
+      }
+
+      const titlePart = displayName
+        ? `task: ${accent(displayName)}${taskText ? ` · ${dim(taskText)}` : ''}`
+        : (taskText ? `task: ${accent(taskText)}` : undefined);
+
+      const sub2Parts = [
+        titlePart,
+        currentTask.model ? `model: ${dim(currentTask.model)}` : undefined,
+      ].filter(Boolean).join(` ${themeFg(th, 'accent', CYBER_SEPARATOR, VIOLET)} `);
+      if (sub2Parts) {
+        const clippedSub2 = this.truncateToWidth(sub2Parts, rightWidth);
+        rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${this.padToWidth(clippedSub2, rightWidth)} ${border(ROUNDED_BOX_CHARS.vertical)}`);
+      }
+
+      // Row 3: Header Divider
+      const headerDivider = `${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal.repeat(rightWidth + 2) + ROUNDED_BOX_CHARS.tLeft)}`;
+      rawLines.push(headerDivider);
+
+      const headerCount = rawLines.length;
+      const nonBodyRows = headerCount + 1 + 1; // headerCount + listDivider (1) + bottomFrame (1)
+      const availableSpace = Math.max(4, maxLines - nonBodyRows);
+      const listHeight = Math.min(tasks.length, Math.max(1, Math.min(4, Math.floor(availableSpace * 0.35))));
+      const detailsHeight = Math.max(2, availableSpace - listHeight);
+
+      // Keep sidebar scroll focused on selected task within listHeight
+      if (this.selected !== this.lastSelectedTaskIdx) {
+        if (this.selected < this.sidebarScroll) this.sidebarScroll = this.selected;
+        if (this.selected >= this.sidebarScroll + listHeight) this.sidebarScroll = this.selected - listHeight + 1;
+        this.lastSelectedTaskIdx = this.selected;
+      }
+      this.sidebarScroll = Math.max(0, Math.min(Math.max(0, tasks.length - listHeight), this.sidebarScroll));
+
+      // Prepare main view content
+      const structuredBody = isValidThreadSnapshot(currentTask.thread_snapshot);
+      const bodyEntries = this.bodyEntriesFor(currentTask, rightWidth);
+      const wrappedEntries = structuredBody ? bodyEntries : this.wrapWithTaskIds(bodyEntries, rightWidth);
+      const maxScroll = Math.max(0, wrappedEntries.length - detailsHeight);
+      if (this.followTail) this.scroll = maxScroll;
+      if (this.scroll > maxScroll) this.scroll = maxScroll;
+      this.lastMaxScroll = maxScroll;
+      const visibleEntries = wrappedEntries.slice(this.scroll, this.scroll + detailsHeight);
+
+      this.rowTaskMap.clear();
+
+      // Render details rows
+      for (let i = 0; i < detailsHeight; i++) {
+        const terminalRow = headerCount + i;
+        let cellText = '';
+        if (i < visibleEntries.length) {
+          const entry = visibleEntries[i]!;
+          if (entry.taskId) {
+            this.rowTaskMap.set(terminalRow, entry.taskId);
+          }
+          cellText = structuredBody ? entry.text : this.renderFlowLine(entry.text, rightWidth);
+        }
+        const padded = this.padToWidth(cellText, rightWidth);
+        rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${padded} ${border(ROUNDED_BOX_CHARS.vertical)}`);
+      }
+
+      // Divider before subagents list at the bottom
+      const listScrollPos = `[${this.sidebarScroll + 1}-${Math.min(tasks.length, this.sidebarScroll + listHeight)}/${tasks.length}] `;
+      const scrollArrow = tasks.length > listHeight ? '▲/▼ ' : '';
+      const listLabel = `executions ${listScrollPos}${scrollArrow}`;
+      const listLabelVis = this.visibleWidth(listLabel);
+      const listDivFill = Math.max(0, w - listLabelVis - 5);
+      rawLines.push(`${border(ROUNDED_BOX_CHARS.tRight + ROUNDED_BOX_CHARS.horizontal)} ${dim(listLabel)} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(listDivFill) + ROUNDED_BOX_CHARS.tLeft)}`);
+
+      // Render subagents list rows
+      this.lastListStartRow = rawLines.length;
+      for (let i = 0; i < listHeight; i++) {
+        const terminalRow = rawLines.length;
+        const taskIdx = this.sidebarScroll + i;
+        let lineContent = '';
+        if (taskIdx < tasks.length) {
+          const t = tasks[taskIdx]!;
+          const isSelected = taskIdx === this.selected;
+          this.rowTaskMap.set(terminalRow, t.id);
+
+          const icon = isSelected ? '●' : '○';
+          const name = t.display_name?.trim() || t.agent;
+          const dur = fmtDuration(t);
+          const durPart = dur ? ` · ${dur}` : '';
+          const itemText = `${icon} ${taskIdx + 1}. ${name} · ${t.status}${durPart}`;
+          const clipped = this.truncateToWidth(itemText, rightWidth);
+          lineContent = isSelected ? themeFg(th, 'warning', clipped, AMBER) : dim(clipped);
+        }
+        const padded = this.padToWidth(lineContent, rightWidth);
+        rawLines.push(`${border(ROUNDED_BOX_CHARS.vertical)} ${padded} ${border(ROUNDED_BOX_CHARS.vertical)}`);
+      }
+      this.lastListEndRow = rawLines.length - 1;
+
+      // Bottom frame (footer) with shortcuts on the left and close button on the right
+      const maxShortcutsVis = Math.max(4, w - closeVis - 8);
+      let shortcuts = w >= 55 ? '←/→ select · ↑/↓ scroll' : '←/→ select';
+      if (this.visibleWidth(shortcuts) > maxShortcutsVis) {
+        shortcuts = this.truncateToWidth(shortcuts, maxShortcutsVis);
+      }
+      const shortcutsStyled = dim(shortcuts);
+      let shortcutsVis = this.visibleWidth(shortcutsStyled);
+      if (shortcutsVis > maxShortcutsVis) {
+        shortcuts = this.truncateToWidth(shortcuts, maxShortcutsVis);
+        shortcutsVis = this.visibleWidth(dim(shortcuts));
+      }
+      const bottomFill = Math.max(0, w - shortcutsVis - closeVis - 8);
+      const bottomLine = `${border(ROUNDED_BOX_CHARS.bottomLeft + ROUNDED_BOX_CHARS.horizontal)} ${dim(shortcuts)} ${border(ROUNDED_BOX_CHARS.horizontal.repeat(bottomFill))} ${closeBtn} ${border(ROUNDED_BOX_CHARS.horizontal + ROUNDED_BOX_CHARS.bottomRight)}`;
+      rawLines.push(bottomLine);
+
+      const lines = rawLines.map((l) => fitsWidth(l, w, this.visibleWidth) ? l : this.truncateToWidth(l, w));
+      this.updateDebugState(maxLines, w, lines, detailsHeight);
+      return lines;
+    }
   }
 
   private updateDebugState(maxLines: number, width: number, lines: string[], bodyHeight: number): void {

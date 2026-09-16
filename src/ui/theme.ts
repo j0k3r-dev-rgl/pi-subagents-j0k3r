@@ -214,43 +214,8 @@ export function themeStatus(theme: any, status: string, customLabel?: string): s
 }
 
 // Visible-width-safe string manipulation helpers:
-const TERMINAL_ESCAPE_RE = /\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g;
-
-export function stripAnsi(text: string): string {
-  return text.replace(TERMINAL_ESCAPE_RE, '');
-}
-
-export function visibleWidth(text: string): number {
-  return [...stripAnsi(text)].length;
-}
-
-export function truncateToWidth(text: string, width: number, ellipsis = '…'): string {
-  if (width <= 0) return '';
-  if (visibleWidth(text) <= width) return text;
-  const ellWidth = visibleWidth(ellipsis);
-  if (width <= ellWidth) return ellipsis.slice(0, Math.max(0, width));
-
-  const targetWidth = width - ellWidth;
-  let output = '';
-  let vis = 0;
-  for (let i = 0; i < text.length;) {
-    if (text[i] === '\x1b') {
-      const match = text.slice(i).match(TERMINAL_ESCAPE_RE);
-      if (match && match.index === 0) {
-        output += match[0];
-        i += match[0].length;
-        continue;
-      }
-    }
-    const codePoint = text.codePointAt(i)!;
-    const char = String.fromCodePoint(codePoint);
-    if (vis + 1 > targetWidth) break;
-    output += char;
-    vis += 1;
-    i += char.length;
-  }
-  return `${output}${ellipsis}`;
-}
+export { stripAnsi, visibleWidth, truncateToWidth } from '../render/text-width.js';
+import { stripAnsi, visibleWidth, truncateToWidth } from '../render/text-width.js';
 
 export function padToWidth(text: string, width: number): string {
   const clipped = truncateToWidth(text, width, '');

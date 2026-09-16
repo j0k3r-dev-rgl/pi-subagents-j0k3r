@@ -1846,5 +1846,252 @@ describe('subagents panel and extension ui', () => {
     expect(panel.getRenderDebugState().selectedIndex).toBe(1);
   });
 
+  it('renders responsive narrow view with subagents list at bottom and close button', () => {
+    let closed = false;
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      { id: 'task-1', agent: 'orchestrator', mode: 'task', status: 'completed', task: 'coordinate workflow', created_at: now, thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status', text: 'orch status' }] } },
+      { id: 'task-2', agent: 'analyst', display_name: 'Deep Analysis', mode: 'task', status: 'running', task: 'analyze performance', created_at: now, thread_snapshot: { version: 1, source: 'events', items: [{ type: 'status', text: 'analyst status' }] } },
+      { id: 'task-3', agent: 'sdd-apply', mode: 'task', status: 'queued', task: 'apply modifications', created_at: now },
+      { id: 'task-4', agent: 'sdd-verify', mode: 'task', status: 'queued', task: 'verify results', created_at: now },
+    ];
+
+    const visible = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, '').length;
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => { closed = true; },
+      () => false,
+      visible,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      24,
+    );
+
+    const rendered = panel.render(60);
+    expect(rendered.every((line) => visible(line) <= 60)).toBe(true);
+
+    const fullText = rendered.join('\n');
+    // Header must contain close button
+    expect(rendered[0]).toContain('[✕ Cerrar]');
+    // Footer must contain close button
+    expect(rendered[rendered.length - 1]).toContain('[✕ Cerrar]');
+
+    // Bottom section must show the executions list
+    expect(fullText).toContain('executions [1-4/4]');
+    expect(fullText).toContain('orchestrator · completed');
+    expect(fullText).toContain('Deep Analysis · running');
+    expect(fullText).toContain('sdd-apply · queued');
+
+    // Click on the second subagent row in the bottom list to select it
+    const analystRow = rendered.findIndex((line) => line.includes('Deep Analysis'));
+    expect(analystRow).toBeGreaterThan(0);
+    const clickResult = panel.handleMouse({ type: 'click', row: analystRow, col: 10 });
+    expect(clickResult).toEqual({ handled: true, focus: true, render: true });
+    expect(panel.getRenderDebugState().selectedIndex).toBe(1);
+
+    // Click on header close button closes panel
+    panel.handleMouse({ type: 'click', row: 0, col: 55 });
+    expect(closed).toBe(true);
+
+    // Reset and click on footer close button closes panel
+    closed = false;
+    panel.handleMouse({ type: 'click', row: rendered.length - 1, col: 55 });
+    expect(closed).toBe(true);
+  });
+
+  it('supports scrolling the bottom subagents list with mouse wheel in narrow view', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `task-${i + 1}`,
+      agent: `agent-${i + 1}`,
+      mode: 'task' as const,
+      status: 'completed' as const,
+      task: `task number ${i + 1}`,
+      created_at: now,
+      thread_snapshot: { version: 1 as const, source: 'events' as const, items: [{ type: 'status' as const, text: `line ${i + 1}` }] },
+    }));
+
+    const visible = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, '').length;
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      visible,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      24,
+    );
+
+    const initial = panel.render(60);
+    const listRowIndex = initial.findIndex((line) => line.includes('● 1. agent-1'));
+    expect(listRowIndex).toBeGreaterThan(0);
+
+    // Wheel down on the list row scrolls the subagent list
+    const wheelResult = panel.handleMouse({ type: 'wheel', wheelDelta: 1, row: listRowIndex, col: 10 });
+    expect(wheelResult).toEqual({ handled: true, render: true });
+
+    const scrolled = panel.render(60).join('\n');
+    expect(scrolled).toContain('executions [2-5/6]');
+  });
+
+  it('renders clean narrow view at minimum width (40) with no line exceeding 40 columns', () => {
+    const now = new Date().toISOString();
+    const tasks: SubagentTask[] = [
+      {
+        id: 'task-min',
+        agent: 'analyst',
+        mode: 'task',
+        status: 'running',
+        task: 'very long task description that definitely exceeds forty columns of space',
+        created_at: now,
+      },
+    ];
+
+    const visible = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, '').length;
+    const panel = new SubagentsHistoryPanel(
+      tasks,
+      { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+      () => undefined,
+      () => false,
+      visible,
+      (text, width) => text.length > width ? text.slice(0, width) : text,
+      {},
+      20,
+    );
+
+    const rendered = panel.render(40);
+    expect(rendered.every((line) => visible(line) <= 40)).toBe(true);
+    expect(rendered[0]).toContain('[✕ Cerrar]');
+    expect(rendered[rendered.length - 1]).toContain('[✕ Cerrar]');
+    expect(rendered.join('\n')).toContain('executions [1-1/1]');
+  });
+
+  it('renders narrow stacked view with intact borders and clean task description', async () => {
+    const { truncateToWidth: realTruncate, visibleWidth: realVisible } = await import('../../src/render/text-width.js');
+    resetPiComponentCacheForTests();
+    try {
+      setPiComponentProviderForSubagentRendering({
+        ToolExecutionComponent: class {
+          constructor(private name: string, _id: string, private args: any) {}
+          markExecutionStarted() {}
+          setArgsComplete() {}
+          updateResult() {}
+          setExpanded() {}
+          render(width: number) {
+            const innerWidth = Math.max(10, width - 4);
+            const topBar = '─'.repeat(Math.max(0, innerWidth - this.name.length - 1));
+            return [
+              `┌ ${this.name} ${topBar}┐`,
+              `│ $ ${this.args?.command ?? 'cmd'} │`,
+              `└${'─'.repeat(innerWidth)}┘`,
+            ];
+          }
+        },
+        AssistantMessageComponent: class {
+          constructor(private msg: any) {}
+          render(_width: number) {
+            const text = this.msg?.content?.[0]?.text ?? '';
+            return text.split('\n');
+          }
+        },
+      });
+
+      const now = new Date().toISOString();
+      const task: SubagentTask = {
+        id: 'subtask_archive',
+        agent: 'sdd-apply',
+        display_name: 'Archive verified definitive mobile redesign',
+        mode: 'task',
+        status: 'completed',
+        task: 'Archive verified definitive mobile redesign: 1. Goal: Archive the ve...',
+        created_at: now,
+        started_at: now,
+        ended_at: now,
+        thread_snapshot: {
+          version: 1,
+          source: 'events',
+          items: [
+            {
+              type: 'tool',
+              id: 'tool-bash',
+              name: 'bash',
+              status: 'completed',
+              arguments: { command: 'ls -la "openspec/changes"' },
+              result: { content: [{ type: 'text', text: 'total 12' }], isError: false },
+            },
+            {
+              type: 'assistant',
+              id: 'asst-1',
+              message: {
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'success: agent settled\n\nHandoff\n\n- Status: READY\n- Artifact: openspec/archive/2026-09-15/redisenio-mobile-definitivo\n- Blockers: None\n- Next action: None',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      };
+
+      const panel = new SubagentsHistoryPanel(
+        [task],
+        { fg: (_name: string, text: string) => `\x1b[36m${text}\x1b[0m`, bold: (text: string) => `\x1b[1m${text}\x1b[0m` },
+        () => {},
+        () => false,
+        realVisible,
+        realTruncate,
+        { tui: { requestRender() {} } },
+        30,
+      );
+
+      const width = 76;
+      const rendered = panel.render(width);
+
+      // 1. Every single rendered line must not exceed width
+      for (let i = 0; i < rendered.length; i++) {
+        const vis = realVisible(rendered[i]!);
+        expect(vis, `line ${i} visible width (${vis}) must be <= ${width}: ${rendered[i]}`).toBeLessThanOrEqual(width);
+      }
+
+      // 2. Top frame must end with [✕ Cerrar] and right corner
+      expect(rendered[0]).toContain('[✕ Cerrar]');
+      expect(rendered[0]).toContain('─╮');
+
+      // 3. Subheader Row 1 must have completed status, agent, and right border
+      expect(rendered[1]).toContain('sdd-apply');
+      expect(rendered[1]).toContain('completed');
+      expect(stripAnsi(rendered[1]!).trimEnd().endsWith('│')).toBe(true);
+
+      // 4. Subheader Row 2 must have clean non-duplicated task description
+      expect(rendered[2]).toContain('Archive verified definitive mobile redesign');
+      expect(rendered[2]).not.toContain('Archive verified definitive mobile redesign: Archive verified');
+      expect(stripAnsi(rendered[2]!).trimEnd().endsWith('│')).toBe(true);
+
+      // 5. Divider line must connect properly
+      expect(rendered[3]).toContain('├');
+      expect(rendered[3]).toContain('┤');
+
+      // 6. Body rows must have left and right borders
+      const bodyRows = rendered.slice(4, rendered.length - 3);
+      expect(bodyRows.length).toBeGreaterThan(0);
+      for (const row of bodyRows) {
+        expect(stripAnsi(row).startsWith('│')).toBe(true);
+        expect(stripAnsi(row).trimEnd().endsWith('│')).toBe(true);
+      }
+
+      // 7. Footer line must end with [✕ Cerrar] and bottom right corner
+      const lastLine = rendered[rendered.length - 1]!;
+      expect(lastLine).toContain('[✕ Cerrar]');
+      expect(stripAnsi(lastLine!).trimEnd().endsWith('─╯')).toBe(true);
+    } finally {
+      resetPiComponentCacheForTests();
+    }
+  });
+
 });
 

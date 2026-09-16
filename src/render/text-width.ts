@@ -1,10 +1,39 @@
-export function visibleWidth(text: string): number {
-  return [...text.replace(/\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g, '')].length;
+const TERMINAL_ESCAPE_RE = /\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g;
+
+export function stripAnsi(text: string): string {
+  return text.replace(TERMINAL_ESCAPE_RE, '');
 }
 
-export function truncateToWidth(text: string, width: number): string {
-  const chars = [...text];
-  return chars.length > width ? chars.slice(0, Math.max(0, width - 1)).join('') + '…' : text;
+export function visibleWidth(text: string): number {
+  return [...stripAnsi(text)].length;
+}
+
+export function truncateToWidth(text: string, width: number, ellipsis = '…'): string {
+  if (width <= 0) return '';
+  if (visibleWidth(text) <= width) return text;
+  const ellWidth = visibleWidth(ellipsis);
+  if (width <= ellWidth) return ellipsis.slice(0, Math.max(0, width));
+
+  const targetWidth = width - ellWidth;
+  let output = '';
+  let vis = 0;
+  for (let i = 0; i < text.length;) {
+    if (text[i] === '\x1b') {
+      const match = text.slice(i).match(TERMINAL_ESCAPE_RE);
+      if (match && match.index === 0) {
+        output += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+    const codePoint = text.codePointAt(i)!;
+    const char = String.fromCodePoint(codePoint);
+    if (vis + 1 > targetWidth) break;
+    output += char;
+    vis += 1;
+    i += char.length;
+  }
+  return `${output}${ellipsis}`;
 }
 
 export function wrapLineToWidth(line: string, width: number): string[] {
