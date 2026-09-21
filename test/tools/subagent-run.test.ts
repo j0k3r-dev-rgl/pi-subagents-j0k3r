@@ -39,6 +39,10 @@ describe('subagent_run tool', () => {
     expect(runTool.parameters.properties.name).toBeDefined();
     expect(runTool.parameters.properties.display_name).toBeDefined();
     expect(runTool.parameters.properties.agents).toBeUndefined();
+    expect(runTool.parameters.properties.title).toBeDefined();
+    expect(runTool.description).toContain('session title');
+    expect(runTool.description).toContain('no separate model call');
+    expect(runTool.promptSnippet).toContain('session title');
   });
 
   it('rejects legacy batch agents input so subagent_run only launches one subagent', async () => {
@@ -71,6 +75,92 @@ describe('subagent_run tool', () => {
     expect(result.terminate).not.toBe(true);
     expect(onUpdate).not.toHaveBeenCalled();
     expect(onTerminalInput).not.toHaveBeenCalled();
+  });
+
+  it('flows an optional session title through to the runner input and the persisted task record', async () => {
+    env.writeAgent('analyst');
+    const runner = vi.fn(async ({ title }: any) => ({
+      result: `titled run received: ${title}`,
+      model: 'mock/model',
+      fallback_used: false,
+    }));
+    const manager = new SubagentManager(runner as any);
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+    const result = await runTool.execute('1', { agent: 'analyst', task: 'audit the auth flow', title: '  Audit\nauth\tflow  ' }, undefined, undefined, { cwd: env.tmp });
+
+    expect(result.isError).not.toBe(true);
+    expect(runner).toHaveBeenCalledWith(expect.objectContaining({ title: 'Audit auth flow' }));
+    expect(result.details.results[0]).toMatchObject({ agent: 'analyst', title: 'Audit auth flow' });
+    expect(manager.listTasks(env.tmp)[0].title).toBe('Audit auth flow');
+  });
+
+  it('applies a supplied title to the nested session before the agent starts, skipping auto-titling', async () => {
+    const appendSessionInfo = vi.fn();
+    const createAgentSession = vi.fn(() => ({
+      session: {
+        messages: [{ role: 'assistant', content: 'titled run done' }],
+        subscribe: vi.fn(() => vi.fn()),
+        prompt: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+    }));
+    vi.resetModules();
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      DefaultResourceLoader: class { reload = vi.fn(async () => undefined); },
+      getAgentDir: () => undefined,
+      SessionManager: { create: vi.fn(() => ({ appendSessionInfo })) },
+      createAgentSession,
+    }));
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    const definition: any = { name: 'analyst', description: 'analysis', filePath: '/tmp/analyst.md', instructions: '# Analyst', tools: ['read'] };
+    const config: any = { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {}, session_resources: 'full' };
+
+    const result = await sdkSubagentRunner({
+      definition,
+      task: 'audit the auth flow',
+      title: 'Audit auth flow',
+      cwd: env.tmp,
+      ctx: { model: { provider: 'test', id: 'model' } },
+      config,
+      signal: new AbortController().signal,
+    } as any);
+
+    expect(appendSessionInfo).toHaveBeenCalledWith('Audit auth flow');
+    expect(result.result).toBe('titled run done');
+  });
+
+  it('does not attempt to title the nested session when none is supplied', async () => {
+    const appendSessionInfo = vi.fn();
+    vi.resetModules();
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      DefaultResourceLoader: class { reload = vi.fn(async () => undefined); },
+      getAgentDir: () => undefined,
+      SessionManager: { create: vi.fn(() => ({ appendSessionInfo })) },
+      createAgentSession: vi.fn(() => ({
+        session: {
+          messages: [{ role: 'assistant', content: 'plain run done' }],
+          subscribe: vi.fn(() => vi.fn()),
+          prompt: vi.fn(async () => undefined),
+          dispose: vi.fn(async () => undefined),
+        },
+      })),
+    }));
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    const definition: any = { name: 'analyst', description: 'analysis', filePath: '/tmp/analyst.md', instructions: '# Analyst', tools: ['read'] };
+    const config: any = { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {}, session_resources: 'full' };
+
+    await sdkSubagentRunner({
+      definition,
+      task: 'plain run',
+      cwd: env.tmp,
+      ctx: { model: { provider: 'test', id: 'model' } },
+      config,
+      signal: new AbortController().signal,
+    } as any);
+
+    expect(appendSessionInfo).not.toHaveBeenCalled();
   });
 
   it('tells the agent to free the chat and wait for automatic notification after background launch', async () => {

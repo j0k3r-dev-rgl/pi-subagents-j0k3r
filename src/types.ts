@@ -75,6 +75,8 @@ export type SubagentRunInput = {
   task: string;
   context?: string;
   mode?: SubagentMode;
+  /** Short display name applied to the nested subagent session(s) without a separate model call. */
+  title?: string;
 };
 
 export type SubagentContinueInput = {
@@ -343,6 +345,8 @@ export type SubagentTask = {
   status: SubagentStatus;
   task: string;
   context?: string;
+  /** Display name applied to the nested Pi session for this task, if the orchestrator supplied one. */
+  title?: string;
   created_at: string;
   attempt?: number;
   session_id?: string;
@@ -380,6 +384,8 @@ export type SubagentRunner = (input: {
   taskId?: string;
   parentPiSessionId?: string;
   context?: string;
+  /** Short display name for the nested Pi session; applied directly without a separate model call. */
+  title?: string;
   cwd: string;
   ctx: any;
   config: SubagentsConfig;
