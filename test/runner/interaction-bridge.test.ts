@@ -172,6 +172,62 @@ describe('subagent runner interaction-required bridge', () => {
     expect(extension.shortcuts.size).toBe(0);
   });
 
+  it('keeps every hook for extensions named in lean_extension_passthrough', async () => {
+    vi.resetModules();
+    const loaderInstances: any[] = [];
+    class DefaultResourceLoader {
+      options: any;
+      reload = vi.fn(async () => undefined);
+      constructor(options: any) { this.options = options; loaderInstances.push(this); }
+    }
+    const session = { systemPrompt: 'system', subscribe: vi.fn(() => vi.fn()), prompt: vi.fn(async () => undefined), messages: [{ role: 'assistant', content: 'ok' }], dispose: vi.fn(async () => undefined) };
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      DefaultResourceLoader,
+      getAgentDir: () => '/agent-dir',
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession: vi.fn(() => ({ session })),
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    await sdkSubagentRunner({
+      definition: { name: 'analyst', description: 'analysis', filePath: '/tmp/analyst.md', instructions: 'system', tools: ['read'] },
+      task: 'ping',
+      cwd: '/workspace',
+      ctx: { model: { provider: 'test', id: 'model' } },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {}, session_resources: 'lean', lean_extension_passthrough: ['pi-claude-bridge'] },
+      signal: new AbortController().signal,
+    });
+
+    const makeExtension = (resolvedPath: string) => ({
+      path: resolvedPath,
+      resolvedPath,
+      sourceInfo: {},
+      handlers: new Map<string, any[]>([
+        ['session_start', [vi.fn()]],
+        ['before_agent_start', [vi.fn()]],
+        ['tool_call', [vi.fn()]],
+      ]),
+      tools: new Map(),
+      messageRenderers: new Map(),
+      commands: new Map([['cmd', vi.fn()]]),
+      flags: new Map(),
+      shortcuts: new Map(),
+    });
+    const filtered = loaderInstances[0].options.extensionsOverride({
+      runtime: {},
+      errors: [],
+      extensions: [
+        makeExtension('/agent/npm/node_modules/pi-claude-bridge/src/index.ts'),
+        makeExtension('/agent/npm/node_modules/pi-claude-bridge-extra/src/index.ts'),
+      ],
+    });
+
+    const [bridge, other] = filtered.extensions;
+    expect([...bridge.handlers.keys()]).toEqual(['session_start', 'before_agent_start', 'tool_call']);
+    expect(bridge.commands.size).toBe(0);
+    expect([...other.handlers.keys()]).toEqual(['tool_call']);
+  });
+
   it('preserves structured interaction requests from nested tool failures while keeping result surfaces marker-free', async () => {
     vi.resetModules();
     const payload = {

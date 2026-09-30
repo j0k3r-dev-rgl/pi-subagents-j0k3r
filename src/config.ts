@@ -151,6 +151,11 @@ function parseSessionResources(value: any): SubagentSessionResources {
   return resources === 'full' ? 'full' : 'lean';
 }
 
+function parseExtensionPassthrough(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => String(entry).trim()).filter((entry) => entry && !/[\\/]/.test(entry)))];
+}
+
 function parseDefaultMode(value: unknown): SubagentMode {
   const mode = String(value ?? 'task').trim().toLowerCase();
   return mode === 'background' ? 'background' : 'task';
@@ -267,6 +272,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     max_concurrency: positiveInteger(raw.max_concurrency, DEFAULT_MAX_CONCURRENCY),
     default_tools: sanitizeTools(Array.isArray(raw.default_tools) ? raw.default_tools.map(String) : DEFAULT_TOOLS),
     session_resources: parseSessionResources(raw.session_resources ?? raw.sessionResources),
+    lean_extension_passthrough: parseExtensionPassthrough(raw.lean_extension_passthrough ?? raw.leanExtensionPassthrough),
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
     history_panel_shortcut: parseModifiedShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),

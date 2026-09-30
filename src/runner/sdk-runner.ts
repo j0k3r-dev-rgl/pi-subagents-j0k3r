@@ -47,13 +47,21 @@ function isNonRetryableSubagentError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && (error as { nonRetryable?: unknown }).nonRetryable);
 }
 
-function isolateSubagentExtensions(base: any): any {
+// An extension passes through when a segment of its path equals a configured
+// name, e.g. "pi-claude-bridge" for .../node_modules/pi-claude-bridge/src/index.ts.
+function isPassthroughExtension(extension: any, passthrough: readonly string[]): boolean {
+  if (!passthrough.length) return false;
+  const paths = [extension?.resolvedPath, extension?.path].filter((value): value is string => typeof value === 'string');
+  return paths.some((value) => value.split(/[\\/]/).some((segment) => passthrough.includes(segment)));
+}
+
+function isolateSubagentExtensions(base: any, passthrough: readonly string[] = []): any {
   return {
     ...base,
     extensions: (base?.extensions ?? []).map((extension: any) => ({
       ...extension,
       handlers: new Map([...((extension.handlers as Map<string, unknown[]>) ?? new Map())]
-        .filter(([event]) => SUBAGENT_ALLOWED_EXTENSION_EVENTS.has(event))),
+        .filter(([event]) => SUBAGENT_ALLOWED_EXTENSION_EVENTS.has(event) || isPassthroughExtension(extension, passthrough))),
       commands: new Map(),
       flags: new Map(),
       shortcuts: new Map(),
@@ -168,13 +176,14 @@ async function createSession(
       noThemes: true,
       noContextFiles: true,
       systemPromptOverride: () => systemPrompt,
-      extensionsOverride: isolateSubagentExtensions,
+      extensionsOverride: (base: any) => isolateSubagentExtensions(base, config.lean_extension_passthrough ?? []),
     });
     await resourceLoader.reload();
     options.agentDir = agentDir;
     options.resourceLoader = resourceLoader;
   }
   const created = await createAgentSession(options);
+  inheritParentProvider(created.session, model, ctx);
   return { ...created, nested_session_path: resolvedSessionPath, pi_version: versionFromPiSdk(piSdk) };
 }
 
@@ -207,6 +216,27 @@ function selectedModel(input: { ctx: any; definition: SubagentDefinition; profil
 
 function providerFromModel(model: any): string | undefined {
   return typeof model?.provider === 'string' ? model.provider : undefined;
+}
+
+// Nested sessions get a fresh model runtime, and lean resources drop the
+// session_start handlers some extensions use to register their provider on a
+// second load. Copy the selected model's provider from the parent when the
+// nested runtime lacks it, so extension-backed providers keep working.
+function inheritParentProvider(session: any, model: any, ctx: any): void {
+  const providerId = providerFromModel(model);
+  const nestedRuntime = session?.modelRuntime;
+  const parentRegistry = ctx?.modelRegistry;
+  if (!providerId || !nestedRuntime || !parentRegistry) return;
+  if (nestedRuntime.getProvider?.(providerId)) return;
+  const nativeProvider = parentRegistry.getRegisteredNativeProvider?.(providerId);
+  if (nativeProvider && typeof nestedRuntime.registerNativeProvider === 'function') {
+    nestedRuntime.registerNativeProvider(nativeProvider);
+    return;
+  }
+  const providerConfig = parentRegistry.getRegisteredProviderConfig?.(providerId);
+  if (providerConfig && typeof nestedRuntime.registerProvider === 'function') {
+    nestedRuntime.registerProvider(providerId, providerConfig);
+  }
 }
 
 function createLiveSteeringBridge(session: any, piVersion: unknown) {

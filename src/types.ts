@@ -59,6 +59,7 @@ export type SubagentsConfig = {
   max_concurrency: number;
   default_tools: string[];
   session_resources?: SubagentSessionResources;
+  lean_extension_passthrough?: string[];
   background_handoff_shortcut?: string;
   history_panel_shortcut?: string;
   detail_cancel_shortcut?: string;

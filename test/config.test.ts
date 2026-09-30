@@ -349,6 +349,18 @@ describe('config and workflow loading', () => {
     expect(readSubagentsConfig(tmp).session_resources).toBe('lean');
   });
 
+  it('parses lean extension passthrough names and drops path-like entries', () => {
+    expect(readSubagentsConfig(tmp).lean_extension_passthrough).toEqual([]);
+
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ lean_extension_passthrough: [' pi-claude-bridge ', 'pi-claude-bridge', '', '../escape', 'a/b', 7] }));
+
+    expect(readSubagentsConfig(tmp).lean_extension_passthrough).toEqual(['pi-claude-bridge', '7']);
+
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ leanExtensionPassthrough: 'pi-claude-bridge' }));
+
+    expect(readSubagentsConfig(tmp).lean_extension_passthrough).toEqual([]);
+  });
+
   it('ignores legacy ui mode config values', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
     expect(readSubagentsConfig(tmp)).not.toHaveProperty('mode');
