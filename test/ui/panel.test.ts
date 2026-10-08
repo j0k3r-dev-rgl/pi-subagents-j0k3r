@@ -1164,7 +1164,7 @@ describe('subagents panel and extension ui', () => {
           registerShortcut: () => undefined,
           on: (event: string, handler: any) => { if (event === 'session_start') sessionStart = handler; },
         });
-        sessionStart?.({}, { cwd: tmp, ui: { notify: (message: string, level?: string) => notifications.push([message, level]) } });
+        sessionStart?.({}, { cwd: tmp, sessionManager: { getSessionId: () => 'panel-duplicate-session' }, ui: { notify: (message: string, level?: string) => notifications.push([message, level]) } });
       });
     } finally {
       process.chdir(previousCwd);
@@ -1198,6 +1198,7 @@ describe('subagents panel and extension ui', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ detail_cancel_shortcut: 'ctrl+shift+q' }));
     let cancelShortcut: any;
     let subagentsCommand: any;
+    let sessionStart: any;
     const previousCwd = process.cwd();
     process.chdir(tmp);
     try {
@@ -1205,27 +1206,31 @@ describe('subagents panel and extension ui', () => {
         registerTool: () => undefined,
         registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
         registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+shift+q') cancelShortcut = shortcut.handler; },
+        on: (event: string, handler: any) => { if (event === 'session_start') sessionStart = handler; },
       });
     } finally {
       process.chdir(previousCwd);
     }
 
-    await cancelShortcut({ cwd: tmp });
-
-    const customStarted = new Promise<void>((resolve) => {
-      void subagentsCommand.handler('', {
-        cwd: tmp,
-        ui: {
-          custom: async (factory: any) => {
-            factory({ terminal: { write: () => undefined }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, () => undefined);
-            resolve();
-            await new Promise(() => undefined);
-          },
+    const panelSessionManager = { getSessionId: () => 'panel-detail-cancel-session' };
+    let customStartedResolve: (() => void) | undefined;
+    const customStarted = new Promise<void>((resolve) => { customStartedResolve = resolve; });
+    const panelCtx = {
+      cwd: tmp,
+      sessionManager: panelSessionManager,
+      ui: {
+        custom: async (factory: any) => {
+          factory({ terminal: { write: () => undefined }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, () => undefined);
+          customStartedResolve?.();
+          await new Promise(() => undefined);
         },
-      });
-    });
+      },
+    };
+    await sessionStart?.({}, panelCtx);
+    await cancelShortcut(panelCtx);
+    void subagentsCommand.handler('', panelCtx);
     await customStarted;
-    await cancelShortcut({ cwd: tmp });
+    await cancelShortcut(panelCtx);
   });
 
   it('subagents history panel can start focused on a selected task id', () => {
@@ -1317,6 +1322,7 @@ describe('subagents panel and extension ui', () => {
 
       await handlers.session_start?.({}, {
         cwd: tmp,
+        sessionManager: { getSessionId: () => 'panel-no-timer-session' },
         ui: {
           setWidget: vi.fn(),
           onTerminalInput: vi.fn(() => () => undefined),
@@ -1326,7 +1332,7 @@ describe('subagents panel and extension ui', () => {
       expect(setIntervalSpy).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
-      await handlers.session_shutdown?.({}, { ui: { setWidget: vi.fn() } });
+      await handlers.session_shutdown?.({ reason: 'quit' }, { sessionManager: { getSessionId: () => 'panel-no-timer-session' }, ui: { setWidget: vi.fn() } });
     }
   });
 
@@ -1341,8 +1347,10 @@ describe('subagents panel and extension ui', () => {
       registerShortcut: () => undefined,
     });
 
+    const terminalSessionManager = { getSessionId: () => 'panel-terminal-session' };
     await handlers.session_start?.({}, {
       cwd: tmp,
+      sessionManager: terminalSessionManager,
       ui: {
         setWidget,
         onTerminalInput: vi.fn(() => off),
@@ -1352,29 +1360,35 @@ describe('subagents panel and extension ui', () => {
     expect(setWidget).toHaveBeenCalled();
     expect(off).not.toHaveBeenCalled();
 
-    await handlers.session_shutdown?.({}, { ui: { setWidget } });
+    await handlers.session_shutdown?.({ reason: 'quit' }, { sessionManager: terminalSessionManager, ui: { setWidget } });
     expect(off).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the history shortcut and command available together', async () => {
     let historyShortcutHandler: any;
     let subagentsCommand: any;
+    let sessionStart: any;
     const custom = vi.fn();
     extension({
       registerTool: () => undefined,
       registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
       registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+,') historyShortcutHandler = shortcut.handler; },
+      on: (event: string, handler: any) => { if (event === 'session_start') sessionStart = handler; },
     });
+    const sessionManager = { getSessionId: () => 'panel-history-command-session' };
+    const ctx = { cwd: tmp, sessionManager, ui: { custom } };
+    await sessionStart?.({}, ctx);
 
-    await historyShortcutHandler({ cwd: tmp, ui: { custom } });
+    await historyShortcutHandler(ctx);
     expect(custom).toHaveBeenCalledTimes(1);
 
-    await subagentsCommand.handler('', { cwd: tmp, ui: { custom } });
+    await subagentsCommand.handler('', ctx);
     expect(custom).toHaveBeenCalledTimes(2);
   });
 
   it('opens the subagents history panel as a full-screen overlay with bounded height', async () => {
     let subagentsCommand: any;
+    let sessionStart: any;
     let customOptions: any;
     let renderedLines: string[] = [];
     const writes: string[] = [];
@@ -1383,10 +1397,12 @@ describe('subagents panel and extension ui', () => {
     extension({
       registerTool: () => undefined,
       registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
+      on: (event: string, handler: any) => { if (event === 'session_start') sessionStart = handler; },
     });
-
-    await subagentsCommand.handler('', {
+    const sessionManager = { getSessionId: () => 'panel-fullscreen-session' };
+    const commandCtx = {
       cwd: tmp,
+      sessionManager,
       ui: {
         custom: async (factory: any, options: any) => {
           customOptions = options;
@@ -1395,7 +1411,9 @@ describe('subagents panel and extension ui', () => {
           component.handleInput('\x1b');
         },
       },
-    });
+    };
+    await sessionStart?.({}, commandCtx);
+    await subagentsCommand.handler('', commandCtx);
 
     expect(customOptions).toEqual({ overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%', margin: 0 } });
     expect(renderedLines).toHaveLength(50);

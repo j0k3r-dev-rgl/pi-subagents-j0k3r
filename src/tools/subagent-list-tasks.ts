@@ -1,12 +1,13 @@
 import { Type } from 'typebox';
-import type { SubagentManager } from '../manager.js';
+import { resolveRuntimeManager } from '../runtime-registry.js';
+import type { RuntimeManagerSourceV1 } from '../runtime-registry.js';
 import { emptyComponent } from '../render/tools/components.js';
 import { formatTaskListSummary } from '../render/tools/formatting.js';
 import { renderSubagentListTasksResult } from '../render/tools/subagent-list-tasks.js';
 import { compactTaskWithoutFinalText, sessionIdFromToolContext } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
-export function createSubagentListTasksTool(manager: SubagentManager) {
+export function createSubagentListTasksTool(source: RuntimeManagerSourceV1) {
   return {
     name: 'subagent_list_tasks',
     label: 'Subagent List Tasks',
@@ -14,6 +15,7 @@ export function createSubagentListTasksTool(manager: SubagentManager) {
     parameters: Type.Object({}),
     async execute(_id: string, _params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
+        const { manager } = resolveRuntimeManager(source, ctx);
         const cwd = ctx?.cwd ?? process.cwd();
         const tasks = manager.listSessionTasks(cwd, sessionIdFromToolContext(ctx));
         const compactTasks = tasks.map(compactTaskWithoutFinalText);

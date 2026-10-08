@@ -1,10 +1,11 @@
 import { Type } from 'typebox';
-import type { SubagentManager } from '../manager.js';
+import { resolveRuntimeManager } from '../runtime-registry.js';
+import type { RuntimeManagerSourceV1 } from '../runtime-registry.js';
 import { emptyComponent } from '../render/tools/components.js';
 import { formatSubagentList, renderSubagentListResult } from '../render/tools/subagent-list-agents.js';
 import { ok, fail } from './tool-response.js';
 
-export function createSubagentListAgentsTool(manager: SubagentManager) {
+export function createSubagentListAgentsTool(source: RuntimeManagerSourceV1) {
   return {
     name: 'subagent_list_agents',
     label: 'Subagent List Agents',
@@ -13,6 +14,7 @@ export function createSubagentListAgentsTool(manager: SubagentManager) {
     parameters: Type.Object({}),
     async execute(_id: string, _params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
+        const { manager } = resolveRuntimeManager(source, ctx);
         const agents = manager.listAgents(ctx?.cwd ?? process.cwd(), ctx);
         return ok(formatSubagentList(agents, true), { agents });
       } catch (e) {

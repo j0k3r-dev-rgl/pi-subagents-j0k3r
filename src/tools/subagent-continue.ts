@@ -1,7 +1,8 @@
 import { Type } from 'typebox';
 import { readSubagentsConfig } from '../config.js';
 import { resolveContinuationEffectiveMode } from '../continuation-mode.js';
-import type { SubagentManager } from '../manager.js';
+import { resolveRuntimeManager } from '../runtime-registry.js';
+import type { RuntimeManagerSourceV1 } from '../runtime-registry.js';
 import type { SubagentTask } from '../types.js';
 import { appendSubagentResumeGuidance, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
 import { progressText } from '../render/tools/progress.js';
@@ -11,7 +12,7 @@ import { compactResultDetails, compactTaskForToolResult } from './result-details
 import { installDoubleEscapeCancel } from './subagent-run.js';
 import { ok, fail } from './tool-response.js';
 
-export function createSubagentContinueTool(manager: SubagentManager) {
+export function createSubagentContinueTool(source: RuntimeManagerSourceV1) {
   return {
     name: 'subagent_continue',
     label: 'Subagent Continue',
@@ -33,6 +34,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
     }),
     renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, onUpdate: any, ctx: any) {
+      const { manager } = resolveRuntimeManager(source, ctx);
       let cancelledByDoubleEscape = false;
       let frame = 0;
       let active = true;
@@ -59,9 +61,9 @@ export function createSubagentContinueTool(manager: SubagentManager) {
           active = false;
         }
       };
-      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
+      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, source, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
       const uninstallBackground = canBackgroundInTaskMode
-        ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
+        ? installBackgroundHandoffShortcut(ctx, source, () => latestTasks.map((task) => task.id), (tasks) => {
           active = false;
           resolveBackground?.({ mode: 'background', task_ids: tasks.map((task) => task.id) });
         })
@@ -91,7 +93,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
         uninstallBackground();
       }
     },
-    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, args?.task_id ? manager.getTask(args.task_id, process.cwd()) : undefined, process.cwd()),
+    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, undefined, process.cwd()),
     renderResult: renderSubagentContinueResult,
   };
 }

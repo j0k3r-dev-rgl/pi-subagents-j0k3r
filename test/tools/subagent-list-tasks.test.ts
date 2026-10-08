@@ -16,10 +16,12 @@ describe('subagent_list_tasks tool', () => {
       if (tool.name === 'subagent_list_tasks') listTool = tool;
     } }, manager);
 
-    await runTool.execute('1', { agent: 'analyst', task: 'current session task', mode: 'task' }, undefined, undefined, { cwd: env.tmp, sessionId: 'session-current' });
-    await runTool.execute('2', { agent: 'analyst', task: 'other session task', mode: 'task' }, undefined, undefined, { cwd: env.tmp, sessionId: 'session-other' });
+    const currentSessionCtx = { cwd: env.tmp, sessionManager: { getSessionId: () => 'session-current' } };
+    const otherSessionCtx = { cwd: env.tmp, sessionManager: { getSessionId: () => 'session-other' } };
+    await runTool.execute('1', { agent: 'analyst', task: 'current session task', mode: 'task' }, undefined, undefined, currentSessionCtx);
+    await runTool.execute('2', { agent: 'analyst', task: 'other session task', mode: 'task' }, undefined, undefined, otherSessionCtx);
 
-    const result = await listTool.execute('3', {}, undefined, undefined, { cwd: env.tmp, sessionId: 'session-current' });
+    const result = await listTool.execute('3', {}, undefined, undefined, currentSessionCtx);
     expect(result.content[0].text).toContain('Listed 1 subagent task');
     expect(result.content[0].text).toContain('current session');
     expect(result.details.tasks.map((task: any) => task.task)).toEqual(['current session task']);

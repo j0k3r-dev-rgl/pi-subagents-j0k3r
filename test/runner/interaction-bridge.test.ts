@@ -755,8 +755,9 @@ describe('subagent runner interaction-required bridge', () => {
         definition,
         task: 'read /etc/hosts',
         taskId: 'task_sdd-verify_123',
+        parentPiSessionId: 'parent-pi-session',
         cwd: '/workspace',
-        ctx: { model: { provider: 'test', id: 'model' }, sessionManager: { getSessionId: () => 'parent-pi-session' } },
+        ctx: { model: { provider: 'test', id: 'model' } },
         config,
         signal: new AbortController().signal,
       });

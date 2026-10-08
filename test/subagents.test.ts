@@ -64,97 +64,88 @@ describe('subagents smoke', () => {
     expect(prompt).not.toContain('SYSTEM ONLY');
   });
 
-  it('reconciles orphaned tasks on session start and cancels running work on session shutdown', async () => {
+  it('reuses one manager on reload and reconciles only a new entry', async () => {
     vi.resetModules();
     const reconcileOrphanedTasks = vi.fn();
     const cancelRunning = vi.fn();
-    const managerInstance = { reconcileOrphanedTasks, cancelRunning, listSessionTasks: () => [] };
-    class MockManager {
-      constructor() { return managerInstance as any; }
-    }
-    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
-    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
-
-    const handlers = new Map<string, Function>();
-    const pi = {
-      registerMessageRenderer: vi.fn(),
-      registerShortcut: vi.fn(),
-      registerCommand: vi.fn(),
-      registerTool: vi.fn(),
-      on: vi.fn((event: string, handler: Function) => { handlers.set(event, handler); }),
-    };
-
-    reloadedExtension(pi);
-    handlers.get('session_start')?.({}, { cwd: env.tmp, ui: {} });
-    handlers.get('session_shutdown')?.({}, { cwd: env.tmp, ui: {} });
-
-    expect(reconcileOrphanedTasks).toHaveBeenCalledWith(env.tmp);
-    expect(cancelRunning).toHaveBeenCalledWith('Pi session shutdown');
-  });
-
-  it('suppresses stale Pi context errors from delayed background completion delivery', async () => {
-    vi.resetModules();
-    let onTerminalBackgroundTask: ((task: any, cwd?: string) => void) | undefined;
-    const managerInstance = { reconcileOrphanedTasks: vi.fn(), cancelRunning: vi.fn(), listSessionTasks: () => [] };
-    class MockManager {
-      constructor(_runner?: unknown, _max?: unknown, completion?: (task: any, cwd?: string) => void) {
-        onTerminalBackgroundTask = completion;
-        return managerInstance as any;
-      }
-    }
-    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
-    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
-
-    const pi = {
-      sendMessage: vi.fn(() => { throw new Error('This extension ctx is stale after session replacement or reload'); }),
-      registerMessageRenderer: vi.fn(),
-      registerShortcut: vi.fn(),
-      registerCommand: vi.fn(),
-      registerTool: vi.fn(),
-    };
-
-    reloadedExtension(pi);
-
-    expect(() => onTerminalBackgroundTask?.({ id: 'subtask_stale', agent: 'discovery', status: 'completed', mode: 'background', result: 'done' }, env.tmp)).not.toThrow();
-    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not deliver a background completion to a replaced Pi session', async () => {
-    vi.resetModules();
-    let onTerminalBackgroundTask: ((task: any, cwd?: string) => void) | undefined;
     const managerInstance = {
-      reconcileOrphanedTasks: vi.fn(),
-      cancelRunning: vi.fn(),
+      reconcileOrphanedTasks,
+      cancelRunning,
+      awaitSettled: vi.fn(async () => undefined),
       onTaskUpdate: vi.fn(() => () => undefined),
       listActiveSessionTasks: () => [],
       listSessionTasks: () => [],
     };
+    const constructor = vi.fn();
     class MockManager {
-      constructor(_runner?: unknown, _max?: unknown, completion?: (task: any, cwd?: string) => void) {
-        onTerminalBackgroundTask = completion;
+      constructor() {
+        constructor();
         return managerInstance as any;
       }
     }
     vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
+    const runtime = await import('../src/runtime-registry.js');
+    runtime.resetRuntimeRegistryForTests();
     const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
-
-    const handlers = new Map<string, Function>();
-    const pi = {
-      sendMessage: vi.fn(),
-      registerMessageRenderer: vi.fn(),
-      registerShortcut: vi.fn(),
-      registerCommand: vi.fn(),
-      registerTool: vi.fn(),
-      on: vi.fn((event: string, handler: Function) => { handlers.set(event, handler); }),
+    const makePi = () => {
+      const handlers = new Map<string, Function>();
+      return {
+        handlers,
+        pi: {
+          registerMessageRenderer: vi.fn(), registerShortcut: vi.fn(), registerCommand: vi.fn(), registerTool: vi.fn(),
+          on: vi.fn((event: string, handler: Function) => { handlers.set(event, handler); }),
+        },
+      };
     };
+    const ctx = { cwd: env.tmp, sessionManager: { getSessionId: () => 'reload-session' }, ui: {} };
+    const generationA = makePi();
+    reloadedExtension(generationA.pi);
+    generationA.handlers.get('session_start')?.({}, ctx);
+    generationA.handlers.get('session_shutdown')?.({ reason: 'reload' }, ctx);
+    expect(cancelRunning).not.toHaveBeenCalled();
 
-    reloadedExtension(pi);
-    handlers.get('session_start')?.({}, { cwd: env.tmp, sessionId: 'session-new', ui: { setWidget: vi.fn() } });
+    const generationB = makePi();
+    reloadedExtension(generationB.pi);
+    generationB.handlers.get('session_start')?.({ reason: 'reload' }, ctx);
 
-    onTerminalBackgroundTask?.({ id: 'subtask_old', agent: 'discovery', status: 'completed', mode: 'background', result: 'done', session_id: 'session-old' }, env.tmp);
-    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(constructor).toHaveBeenCalledTimes(1);
+    expect(reconcileOrphanedTasks).toHaveBeenCalledTimes(1);
+    expect(reconcileOrphanedTasks).toHaveBeenCalledWith(env.tmp);
+  });
 
-    onTerminalBackgroundTask?.({ id: 'subtask_new', agent: 'discovery', status: 'completed', mode: 'background', result: 'done', session_id: 'session-new' }, env.tmp);
-    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+  it.each(['quit', 'new', 'resume', 'fork', 'unexpected'])('uses definitive closing for %s', async (reason) => {
+    vi.resetModules();
+    const cancelRunning = vi.fn();
+    const managerInstance = {
+      reconcileOrphanedTasks: vi.fn(), cancelRunning, awaitSettled: vi.fn(async () => undefined),
+      onTaskUpdate: vi.fn(() => () => undefined), listActiveSessionTasks: () => [], listSessionTasks: () => [],
+    };
+    class MockManager { constructor() { return managerInstance as any; } }
+    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
+    const runtime = await import('../src/runtime-registry.js');
+    runtime.resetRuntimeRegistryForTests();
+    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
+    const handlers = new Map<string, Function>();
+    reloadedExtension({
+      registerMessageRenderer: vi.fn(), registerShortcut: vi.fn(), registerCommand: vi.fn(), registerTool: vi.fn(),
+      on: (event: string, handler: Function) => handlers.set(event, handler),
+    });
+    const ctx = { cwd: env.tmp, sessionManager: { getSessionId: () => `closing-${reason}` }, ui: {} };
+    handlers.get('session_start')?.({}, ctx);
+    await handlers.get('session_shutdown')?.({ reason }, ctx);
+    expect(cancelRunning).toHaveBeenCalledWith(`Pi session shutdown: ${reason}`);
+    expect(runtime.getRuntimeEntryForTests(`closing-${reason}`)).toBeUndefined();
+  });
+
+  it('requires getSessionId for session identity', async () => {
+    vi.resetModules();
+    const runtime = await import('../src/runtime-registry.js');
+    runtime.resetRuntimeRegistryForTests();
+    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
+    const handlers = new Map<string, Function>();
+    reloadedExtension({ registerTool: vi.fn(), registerCommand: vi.fn(), registerShortcut: vi.fn(), on: (event: string, handler: Function) => handlers.set(event, handler) });
+    const expected = 'Missing Pi session identity from ctx.sessionManager.getSessionId().';
+    expect(() => handlers.get('session_start')?.({}, { cwd: env.tmp, sessionManager: {} })).toThrow(expected);
+    expect(() => handlers.get('session_shutdown')?.({ reason: 'reload' }, { cwd: env.tmp, sessionManager: {} })).toThrow(expected);
   });
 });

@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import { loadSubagents, readSubagentsConfig, resolveEffectiveSubagentMode } from '../config.js';
-import type { SubagentManager } from '../manager.js';
+import { resolveRuntimeManager } from '../runtime-registry.js';
+import type { RuntimeManagerSourceV1 } from '../runtime-registry.js';
 import type { SubagentTask } from '../types.js';
 import { appendSubagentResumeGuidance, formatTask, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
 import { progressText } from '../render/tools/progress.js';
@@ -9,9 +10,15 @@ import { installBackgroundHandoffShortcut } from './background-handoff-state.js'
 import { compactResultDetails, compactTaskForToolResult } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
-export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, onCancel: () => void, getTaskIds: () => string[] = () => []): () => void {
+export function installDoubleEscapeCancel(ctx: any, source: RuntimeManagerSourceV1, onCancel: () => void, getTaskIds: () => string[] = () => []): () => void {
   let lastEscapeAt = 0;
+  const initial = resolveRuntimeManager(source, ctx);
+  const initialToken = initial.link?.token;
   const unsubscribe = ctx?.ui?.onTerminalInput?.((data: string) => {
+    let current: ReturnType<typeof resolveRuntimeManager>;
+    try { current = resolveRuntimeManager(source, ctx); }
+    catch { return undefined; }
+    if (initialToken !== undefined && current.link?.token !== initialToken) return undefined;
     if (data !== '\u001b') return undefined;
     const now = Date.now();
     const isDoubleEscape = now - lastEscapeAt <= 600;
@@ -21,12 +28,13 @@ export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, on
     const ids = getTaskIds();
     const cancelled = ids.length
       ? ids.map((id) => {
-        try { return manager.cancel(id, 'cancelled by double escape'); }
+        try { return current.manager.cancel(id, 'cancelled by double escape'); }
         catch { return undefined; }
       }).filter(Boolean)
-      : manager.cancelRunning('cancelled by double escape');
-    ctx?.abort?.();
-    ctx?.ui?.notify?.(
+      : current.manager.cancelRunning('cancelled by double escape');
+    const currentCtx = (current.link?.ctx ?? ctx) as any;
+    currentCtx?.abort?.();
+    currentCtx?.ui?.notify?.(
       cancelled.length ? `Cancelled ${cancelled.length} subagent task(s).` : 'Requested subagent/main cancellation.',
       'warning',
     );
@@ -36,7 +44,7 @@ export function installDoubleEscapeCancel(ctx: any, manager: SubagentManager, on
   return typeof unsubscribe === 'function' ? unsubscribe : () => {};
 }
 
-export function createSubagentRunTool(manager: SubagentManager, pi: any) {
+export function createSubagentRunTool(source: RuntimeManagerSourceV1, fallbackPi?: any) {
   return {
     name: 'subagent_run',
     label: 'Subagent Run',
@@ -56,6 +64,8 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
         return fail('subagent_run accepts exactly one agent. Use the `agent` string parameter, not `agents`.');
       }
 
+      const { manager, link } = resolveRuntimeManager(source, ctx);
+      const pi = link?.pi ?? fallbackPi;
       let cancelledByDoubleEscape = false;
       let frame = 0;
       let active = true;
@@ -82,9 +92,9 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
           active = false;
         }
       };
-      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
+      const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, source, () => { cancelledByDoubleEscape = true; }, () => latestTasks.map((task) => task.id));
       const uninstallBackground = canBackgroundInTaskMode
-        ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
+        ? installBackgroundHandoffShortcut(ctx, source, () => latestTasks.map((task) => task.id), (tasks) => {
           active = false;
           resolveBackground?.({ mode: 'background', task_ids: tasks.map((task) => task.id) });
         })

@@ -19,22 +19,44 @@ function modelRefLabel(ref: ModelRef | undefined): string | undefined {
   return ref ? `${ref.provider}/${ref.id}` : undefined;
 }
 
-function resolveModel(ctx: any, ref?: ModelRef): any | undefined {
+type SdkRunnerContext = {
+  model?: any;
+  modelRuntime?: any;
+  modelRegistry?: any;
+  settingsManager?: any;
+  thinkingLevel?: unknown;
+  activeToolNames?: string[];
+};
+
+function resolveModel(ctx: SdkRunnerContext, ref?: ModelRef): any | undefined {
   if (!ref) return undefined;
-  return ctx?.modelRuntime?.getModel?.(ref.provider, ref.id) ?? ctx?.modelRegistry?.find?.(ref.provider, ref.id);
+  return ctx.modelRuntime?.getModel?.(ref.provider, ref.id) ?? ctx.modelRegistry?.find?.(ref.provider, ref.id);
 }
 
-function activeToolNames(ctx: any): string[] | undefined {
-  for (const source of [ctx?.pi, ctx]) {
-    try {
-      const tools = source?.getTools?.();
-      if (!Array.isArray(tools)) continue;
-      return tools
-        .map((tool: unknown) => typeof tool === 'string' ? tool : (tool as { name?: unknown })?.name)
-        .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
-    } catch {}
+function toolNamesFrom(source: any): string[] | undefined {
+  try {
+    const tools = source?.getTools?.();
+    if (!Array.isArray(tools)) return undefined;
+    return tools
+      .map((tool: unknown) => typeof tool === 'string' ? tool : (tool as { name?: unknown })?.name)
+      .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
+  } catch {
+    return undefined;
   }
-  return undefined;
+}
+
+function flattenRunnerContext(ctx: any): SdkRunnerContext {
+  const thinkingLevel = ctx?.pi?.getThinkingLevel?.() ?? ctx?.getThinkingLevel?.() ?? ctx?.thinkingLevel;
+  return {
+    model: ctx?.model,
+    modelRuntime: ctx?.modelRuntime,
+    modelRegistry: ctx?.modelRegistry,
+    settingsManager: ctx?.settingsManager,
+    thinkingLevel,
+    activeToolNames: Array.isArray(ctx?.activeToolNames)
+      ? ctx.activeToolNames.filter((name: unknown): name is string => typeof name === 'string' && name.length > 0)
+      : toolNamesFrom(ctx?.pi) ?? toolNamesFrom(ctx),
+  };
 }
 
 const SUBAGENT_ALLOWED_EXTENSION_EVENTS = new Set(['tool_call', 'tool_result', 'user_bash']);
@@ -132,7 +154,7 @@ async function createSession(
   tools: string[],
   effort: ThinkingEffort | undefined,
   config: SubagentsConfig,
-  ctx: any,
+  services: SdkRunnerContext,
   systemPrompt: string,
   nestedSessionPath?: string,
 ) {
@@ -153,8 +175,8 @@ async function createSession(
     tools,
     sessionManager,
   };
-  if (ctx?.modelRuntime) options.modelRuntime = ctx.modelRuntime;
-  if (ctx?.settingsManager) options.settingsManager = ctx.settingsManager;
+  if (services.modelRuntime) options.modelRuntime = services.modelRuntime;
+  if (services.settingsManager) options.settingsManager = services.settingsManager;
   if (config.session_resources === 'lean') {
     const DefaultResourceLoader = piSdk.DefaultResourceLoader;
     const agentDir = typeof piSdk.getAgentDir === 'function' ? piSdk.getAgentDir() : undefined;
@@ -162,7 +184,7 @@ async function createSession(
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
-      settingsManager: ctx?.settingsManager,
+      settingsManager: services.settingsManager,
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
@@ -196,7 +218,7 @@ function createSessionAbortBridge(session: any, signal: AbortSignal) {
   };
 }
 
-function selectedModel(input: { ctx: any; definition: SubagentDefinition; profile: EffectiveSubagentProfile }): any | undefined {
+function selectedModel(input: { ctx: SdkRunnerContext; definition: SubagentDefinition; profile: EffectiveSubagentProfile }): any | undefined {
   const ref = input.profile.model.value;
   if (!ref) return input.ctx?.model;
   if (input.profile.model.source === 'orchestrator') return input.ctx?.model ?? resolveModel(input.ctx, ref);
@@ -222,12 +244,20 @@ function createLiveSteeringBridge(session: any, piVersion: unknown) {
   };
 }
 
-export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, registerLiveBridge, clearLiveBridge, onQueuedMessageStart, onActivity }) => {
-  const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
-  const preferred = selectedModel({ ctx, definition, profile });
+type SubagentRunnerInput = Parameters<SubagentRunner>[0];
+type FlattenedSubagentRunnerInput = Omit<SubagentRunnerInput, 'ctx'> & { runnerContext: SdkRunnerContext };
+
+export const sdkSubagentRunner: SubagentRunner = (input) => {
+  const { ctx, ...flatInput } = input;
+  return runSdkSubagent({ ...flatInput, runnerContext: flattenRunnerContext(ctx) });
+};
+
+async function runSdkSubagent({ definition, task, taskId, parentPiSessionId, context, cwd, config, signal, effectiveProfile, nested_session_path, continuation, registerLiveBridge, clearLiveBridge, onQueuedMessageStart, onActivity, runnerContext }: FlattenedSubagentRunnerInput) {
+  const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx: runnerContext });
+  const preferred = selectedModel({ ctx: runnerContext, definition, profile });
   const effort = profile.effort.value;
   const configuredTools = definition.tools?.length ? definition.tools : config.default_tools;
-  const tools = expandToolPatterns(configuredTools, activeToolNames(ctx));
+  const tools = expandToolPatterns(configuredTools, runnerContext.activeToolNames);
   const systemPrompt = definition.instructions;
   const prompt = continuation?.prompt ?? buildPrompt(definition, task, context, tools);
   onActivity?.({
@@ -240,10 +270,10 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
 
   async function attempt(model: any) {
     onActivity?.({ message: `starting ${definition.name} with model ${modelLabel(model) ?? 'unknown'}${effort ? ` effort ${effort}` : ''}`, prompt, system_prompt: systemPrompt, effort });
-    const { session, nested_session_path: resolvedNestedSessionPath, pi_version: piVersion } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
+    const { session, nested_session_path: resolvedNestedSessionPath, pi_version: piVersion } = await createSession(model, cwd, tools, effort, config, runnerContext, systemPrompt, nested_session_path);
     registerLiveBridge?.(createLiveSteeringBridge(session, piVersion));
     onActivity?.({ message: 'nested session ready', nested_session_path: resolvedNestedSessionPath });
-    const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
+    const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId);
     const abortBridge = createSessionAbortBridge(session, signal);
     try {
       if (signal.aborted) {
@@ -315,4 +345,4 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
     });
     throw new SubagentStructuredError(primaryFailure);
   }
-};
+}

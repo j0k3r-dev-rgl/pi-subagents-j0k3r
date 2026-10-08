@@ -1,10 +1,11 @@
 import { Type } from 'typebox';
-import type { SubagentManager } from '../manager.js';
+import { resolveRuntimeManager } from '../runtime-registry.js';
+import type { RuntimeManagerSourceV1 } from '../runtime-registry.js';
 import { renderSubagentSendMessageCall, renderSubagentSendMessageResult } from '../render/tools/subagent-send-message.js';
 import { sessionIdFromToolContext } from './result-details.js';
 import { ok, fail } from './tool-response.js';
 
-export function createSubagentSendMessageTool(manager: SubagentManager) {
+export function createSubagentSendMessageTool(source: RuntimeManagerSourceV1) {
   return {
     name: 'subagent_send_message',
     label: 'Subagent Send Message',
@@ -16,6 +17,7 @@ export function createSubagentSendMessageTool(manager: SubagentManager) {
     renderShell: 'self',
     async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
       try {
+        const { manager } = resolveRuntimeManager(source, ctx);
         const result = manager.sendMessage({
           task_id: params.task_id,
           message: params.message,

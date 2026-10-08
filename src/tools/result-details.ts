@@ -6,10 +6,8 @@ export function taskFromDetails(result: any): SubagentTask | undefined {
 }
 
 export function sessionIdFromToolContext(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
+  const direct = ctx?.sessionManager?.getSessionId?.();
+  return typeof direct === 'string' && direct.length > 0 ? direct : undefined;
 }
 
 function compactErrorMetadataForDetails(task: Pick<SubagentTask, 'error_metadata'>): Record<string, unknown> | undefined {

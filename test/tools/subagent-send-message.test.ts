@@ -77,8 +77,9 @@ describe('subagent_send_message tool', () => {
       if (tool.name === 'subagent_result') resultTool = tool;
     } }, manager);
 
-    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: env.tmp, sessionId: 'parent-a' });
-    const legacy = await manager.run({ agent: 'legacy', task: 'legacy work', mode: 'background' }, { cwd: env.tmp, sessionId: 'parent-a' });
+    const callerCtx = { cwd: env.tmp, sessionManager: { getSessionId: () => 'parent-a' } };
+    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, callerCtx);
+    const legacy = await manager.run({ agent: 'legacy', task: 'legacy work', mode: 'background' }, callerCtx);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const backgroundTaskId = background.task_ids[0]!;
@@ -95,7 +96,7 @@ describe('subagent_send_message tool', () => {
       steer: vi.fn(),
     }, 'parent-a', 1);
 
-    const queued = await sendTool.execute('1', { task_id: backgroundTaskId, message: 'Please include the missing constraint.' }, undefined, undefined, { cwd: env.tmp, sessionId: 'parent-a' });
+    const queued = await sendTool.execute('1', { task_id: backgroundTaskId, message: 'Please include the missing constraint.' }, undefined, undefined, callerCtx);
     expect(queued.details).toMatchObject({ status: 'queued', task_id: backgroundTaskId, pending_message_count: 1 });
     expect(queued.content[0].text).toContain('queued');
     expect(queued.content[0].text).toContain('does not prove model consumption');
@@ -105,7 +106,7 @@ describe('subagent_send_message tool', () => {
     expect(activeStatus.details.task).toMatchObject({ pending_message_count: 1 });
     expect(activeStatus.content[0].text).toContain('pending messages: 1');
 
-    const unsupported = await sendTool.execute('2', { task_id: legacyTaskId, message: 'Please continue.' }, undefined, undefined, { cwd: env.tmp, sessionId: 'parent-a' });
+    const unsupported = await sendTool.execute('2', { task_id: legacyTaskId, message: 'Please continue.' }, undefined, undefined, callerCtx);
     expect(unsupported.details).toMatchObject({
       status: 'rejected',
       reason: 'unsupported_runtime',
@@ -116,11 +117,11 @@ describe('subagent_send_message tool', () => {
     expect(manager.getTask(legacyTaskId)?.pending_message_count ?? 0).toBe(0);
 
     for (let index = 0; index < 15; index += 1) {
-      const response = await sendTool.execute(`limit-${index}`, { task_id: backgroundTaskId, message: `queued message ${index}` }, undefined, undefined, { cwd: env.tmp, sessionId: 'parent-a' });
+      const response = await sendTool.execute(`limit-${index}`, { task_id: backgroundTaskId, message: `queued message ${index}` }, undefined, undefined, callerCtx);
       expect(response.details.status).toBe('queued');
     }
     expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(16);
-    const limitRejected = await sendTool.execute('17', { task_id: backgroundTaskId, message: 'one too many' }, undefined, undefined, { cwd: env.tmp, sessionId: 'parent-a' });
+    const limitRejected = await sendTool.execute('17', { task_id: backgroundTaskId, message: 'one too many' }, undefined, undefined, callerCtx);
     expect(limitRejected.details).toMatchObject({ status: 'rejected', reason: 'queue_count_limit' });
     expect(limitRejected.content[0].text).not.toContain('delivered');
     expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(16);

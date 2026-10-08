@@ -5,8 +5,8 @@ import path from 'node:path';
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as Record<string, any>;
 
 describe('pi package manifest', () => {
-  it('is a public pi package named after the project directory', () => {
-    expect(packageJson.name).toBe(path.basename(process.cwd()));
+  it('is the public canonical pi package', () => {
+    expect(packageJson.name).toBe('pi-subagents-j0k3r');
     expect(packageJson.private).not.toBe(true);
     expect(packageJson.license).toBe('MIT');
     expect(packageJson.keywords).toEqual(expect.arrayContaining(['pi-package', 'pi-extension', 'subagents']));

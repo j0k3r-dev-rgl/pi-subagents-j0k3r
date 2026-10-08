@@ -197,14 +197,21 @@ describe('diagnostics and debug logging', () => {
       const logFile = path.join(tmp, 'subagents-panel-render.jsonl');
       fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ render_debug: { enabled: true, path: logFile } }));
       let subagentsCommand: any;
+      let sessionStart: any;
+      let sessionShutdown: any;
       const requestRender = vi.fn();
       extension({
         registerTool: () => undefined,
         registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
+        on: (event: string, handler: any) => {
+          if (event === 'session_start') sessionStart = handler;
+          if (event === 'session_shutdown') sessionShutdown = handler;
+        },
       });
 
-      await subagentsCommand.handler('', {
+      const ctx = {
         cwd: tmp,
+        sessionManager: { getSessionId: () => 'diagnostics-panel-session' },
         ui: {
           custom: async (factory: any) => {
             const component = factory(
@@ -221,7 +228,10 @@ describe('diagnostics and debug logging', () => {
             component.handleInput('\u001b');
           },
         },
-      });
+      };
+      await sessionStart({}, ctx);
+      await subagentsCommand.handler('', ctx);
+      await sessionShutdown({ reason: 'quit' }, ctx);
 
       const records = readJsonl(logFile);
       const events = records.map((record) => record.event);

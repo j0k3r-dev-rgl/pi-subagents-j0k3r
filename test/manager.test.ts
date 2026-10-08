@@ -228,7 +228,7 @@ describe('manager and history integration', () => {
     };
     const manager = new SubagentManager(runner);
 
-    const result = await manager.run({ agent: 'analyst', task: 'structured failure', mode: 'task' }, { cwd: tmp, sessionId: 'parent-session-123' });
+    const result = await manager.run({ agent: 'analyst', task: 'structured failure', mode: 'task' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-session-123' } });
 
     expect(result.results?.[0].status).toBe('failed');
     expect(result.results?.[0].error).toBe('provider rate limit');
@@ -252,7 +252,7 @@ describe('manager and history integration', () => {
       signal.addEventListener('abort', () => reject(new Error('cleanup complete after timeout')), { once: true });
     });
     const manager = new SubagentManager(runner);
-    const result = await manager.run({ agent: 'analyst', task: 'timeout', mode: 'task' }, { cwd: tmp, sessionId: 'timeout-parent' });
+    const result = await manager.run({ agent: 'analyst', task: 'timeout', mode: 'task' }, { cwd: tmp, sessionManager: { getSessionId: () => 'timeout-parent' } });
 
     expect(result.results?.[0].status).toBe('failed');
     expect(result.results?.[0].error).toBe('timed out after 20ms');
@@ -500,7 +500,7 @@ describe('manager and history integration', () => {
       signal.addEventListener('abort', () => reject(new Error('Subagent was aborted')), { once: true });
     });
     const manager = new SubagentManager(runner, history as any);
-    const result = await manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionId: 'cancel-parent' });
+    const result = await manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'cancel-parent' } });
     const task = manager.cancel(result.task_ids[0], 'user request');
 
     expect(task.status).toBe('stopping');
@@ -572,8 +572,8 @@ describe('manager and history integration', () => {
     });
     const manager = new SubagentManager(runner);
 
-    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
-    const foregroundPromise = manager.run({ agent: 'tasker', task: 'task work', mode: 'task' }, { cwd: tmp, sessionId: 'parent-a' });
+    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } });
+    const foregroundPromise = manager.run({ agent: 'tasker', task: 'task work', mode: 'task' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const backgroundTaskId = background.task_ids[0]!;
@@ -610,7 +610,7 @@ describe('manager and history integration', () => {
       releases.set(definition.name, () => resolve({ result: `${definition.name} done`, model: 'mock/model', fallback_used: false }));
     }));
 
-    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
+    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } });
     await new Promise((resolve) => setTimeout(resolve, 20));
     const taskId = started.task_ids[0]!;
     (manager as any).registerLiveBridge(taskId, { supported: true, detected_pi_version: '0.82.1', steer: vi.fn() }, 'parent-a', 1);
@@ -657,7 +657,7 @@ describe('manager and history integration', () => {
       releases.set(definition.name, () => resolve({ result: `${definition.name} done`, model: 'mock/model', fallback_used: false }));
     }));
 
-    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
+    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } });
     await new Promise((resolve) => setTimeout(resolve, 20));
     const taskId = started.task_ids[0]!;
 
@@ -780,7 +780,7 @@ describe('manager and history integration', () => {
     });
     const manager = new SubagentManager(runner);
 
-    const started = await manager.run({ agent: 'analyst', task: 'cancel me', mode: 'background' }, { cwd: tmp, sessionId: 'cancel-parent' });
+    const started = await manager.run({ agent: 'analyst', task: 'cancel me', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'cancel-parent' } });
     const id = started.task_ids[0]!;
     const stopping = manager.cancel(id, 'user request');
 
@@ -876,7 +876,7 @@ describe('manager and history integration', () => {
     });
     const manager = new SubagentManager(runner);
     const controller = new AbortController();
-    const runPromise = manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-session-456' }, controller.signal);
+    const runPromise = manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-session-456' } }, controller.signal);
     await new Promise((resolve) => setTimeout(resolve, 10));
     controller.abort();
     const result = await runPromise;
@@ -1362,7 +1362,7 @@ describe('manager and history integration', () => {
       return { result: continuation ? `continued ${task}` : `completed ${task}`, model: 'mock/model', fallback_used: false, nested_session_path: sessionPath } as any;
     };
     const manager = new SubagentManager(runner);
-    const session = { cwd: tmp, sessionId: 'session-activity-order' };
+    const session = { cwd: tmp, sessionId: 'session-activity-order', sessionManager: { getSessionId: () => 'session-activity-order' } };
     const taskIds: string[] = [];
     for (const task of ['apply first', 'review second', 'verify third', 'discovery fourth']) {
       const result = await manager.run({ agent: 'analyst', task, mode: 'task' }, session);

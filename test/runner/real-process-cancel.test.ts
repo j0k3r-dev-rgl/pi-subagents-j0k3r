@@ -53,11 +53,17 @@ describe('real process cancellation settlement', () => {
       await waitFor(() => {
         if (!shellPid) return false;
         try {
-          const output = execFileSync('ps', ['-o', 'pid=', '--ppid', String(shellPid)], { encoding: 'utf8' }).trim();
-          const parsed = Number.parseInt(output.split(/\s+/)[0] ?? '', 10);
-          if (!Number.isFinite(parsed)) return false;
-          sleepPid = parsed;
-          return true;
+          const output = execFileSync('ps', ['-ax', '-o', 'pid=', '-o', 'ppid='], { encoding: 'utf8' });
+          for (const line of output.trim().split('\n')) {
+            const [pidText, parentPidText] = line.trim().split(/\s+/);
+            const parsedPid = Number.parseInt(pidText ?? '', 10);
+            const parsedParentPid = Number.parseInt(parentPidText ?? '', 10);
+            if (Number.isFinite(parsedPid) && parsedParentPid === shellPid) {
+              sleepPid = parsedPid;
+              return true;
+            }
+          }
+          return false;
         } catch {
           return false;
         }

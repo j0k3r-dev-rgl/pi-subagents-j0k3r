@@ -11,6 +11,7 @@ import { classifyThrownError, deriveErrorString, enrichErrorMetadata, normalizeE
 import { profileSourceLabel, resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
 import type { EffectiveSubagentProfile, LiveSteeringBridge, ModelRef, SendMessageResult, SubagentContinueInput, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentRunResult, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
+import type { RuntimeManagerAccessV1 } from './runtime-registry.js';
 
 type StopDisposition = {
   status: Extract<SubagentTask['status'], 'failed' | 'cancelled' | 'interrupted'>;
@@ -78,10 +79,42 @@ function modelRefLabel(model: ModelRef | undefined): string | undefined {
 }
 
 function sessionIdFromContext(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
+  const direct = ctx?.sessionManager?.getSessionId?.();
+  return typeof direct === 'string' && direct.length > 0 ? direct : undefined;
+}
+
+type RunnerInvocationContext = {
+  model?: unknown;
+  modelRuntime?: unknown;
+  modelRegistry?: unknown;
+  settingsManager?: unknown;
+  thinkingLevel?: unknown;
+  activeToolNames?: string[];
+};
+
+function toolNamesFrom(source: any): string[] | undefined {
+  try {
+    const tools = source?.getTools?.();
+    if (!Array.isArray(tools)) return undefined;
+    return tools
+      .map((tool: unknown) => typeof tool === 'string' ? tool : (tool as { name?: unknown })?.name)
+      .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
+  } catch {
+    return undefined;
+  }
+}
+
+function runnerInvocationContext(ctx: any, pi?: unknown): RunnerInvocationContext {
+  const piServices = pi as { getThinkingLevel?: () => unknown; getTools?: () => unknown } | undefined;
+  const thinkingLevel = piServices?.getThinkingLevel?.() ?? ctx?.getThinkingLevel?.() ?? ctx?.thinkingLevel;
+  return {
+    model: ctx?.model,
+    modelRuntime: ctx?.modelRuntime,
+    modelRegistry: ctx?.modelRegistry,
+    settingsManager: ctx?.settingsManager,
+    thinkingLevel,
+    activeToolNames: toolNamesFrom(piServices) ?? toolNamesFrom(ctx),
+  };
 }
 
 function sanitizeUnknown<T>(value: T): T {
@@ -221,19 +254,39 @@ async function promptMainThreadForInteraction(ctx: any, request: SubagentInterac
 
 function createLimiter(max: number) {
   let active = 0;
-  const queue: Array<() => void> = [];
+  type Waiter = { resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort?: () => void };
+  const queue: Waiter[] = [];
+  const grantNext = () => {
+    const waiter = queue.shift();
+    if (!waiter) return;
+    if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
+    active += 1;
+    waiter.resolve();
+  };
   return {
-    async acquire() {
+    async acquire(signal?: AbortSignal) {
+      if (signal?.aborted) throw new Error('Subagent was aborted');
       if (active < max) {
         active += 1;
         return;
       }
-      await new Promise<void>((resolve) => queue.push(resolve));
-      active += 1;
+      await new Promise<void>((resolve, reject) => {
+        const waiter: Waiter = { resolve, reject, signal };
+        const onAbort = () => {
+          const index = queue.indexOf(waiter);
+          if (index >= 0) queue.splice(index, 1);
+          reject(new Error('Subagent was aborted'));
+        };
+        if (signal) {
+          waiter.onAbort = onAbort;
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+        queue.push(waiter);
+      });
     },
     release() {
       active = Math.max(0, active - 1);
-      queue.shift()?.();
+      grantNext();
     },
   };
 }
@@ -318,6 +371,7 @@ export class SubagentManager {
     private history = new SubagentHistoryStore(),
     private onTerminalBackgroundTask?: (task: SubagentTask, cwd: string) => void,
     private onInteractionPromptActive?: (active: boolean) => void,
+    private runtimeAccess?: RuntimeManagerAccessV1,
   ) {}
 
   listAgents(cwd: string, ctx: any = {}) {
@@ -560,6 +614,7 @@ export class SubagentManager {
     parentSignal?: AbortSignal,
     onTaskUpdate?: (tasks: SubagentTask[]) => void,
   ): Promise<SubagentRunResult> {
+    this.assertAcceptingWork();
     const cwd = ctx?.cwd ?? process.cwd();
     const agents = input.agents?.length ? input.agents : input.agent ? [input.agent] : [];
     if (!agents.length) throw new Error('subagent_run requires agent or agents.');
@@ -578,6 +633,7 @@ export class SubagentManager {
     });
     notifyUpdate();
     const launched = ids.map((id) => this.tasks.get(id)!).filter(Boolean);
+    if (this.runtimeAccess) ctx = undefined;
     const waitedTaskIds = launched.filter((task) => task.effective_mode === 'task').map((task) => task.id);
     const backgroundTaskIds = launched.filter((task) => task.effective_mode === 'background').map((task) => task.id);
     const resolvedMode: SubagentRunResult['mode'] = explicitMode
@@ -604,6 +660,7 @@ export class SubagentManager {
     parentSignal?: AbortSignal,
     onTaskUpdate?: (tasks: SubagentTask[]) => void,
   ): Promise<{ mode: 'task' | 'background'; task_ids: string[]; results?: SubagentTask[] }> {
+    this.assertAcceptingWork();
     const cwd = ctx?.cwd ?? process.cwd();
     const taskCwd = this.taskCwds.get(input.task_id) ?? cwd;
     const existing = this.getTask(input.task_id, taskCwd);
@@ -611,6 +668,7 @@ export class SubagentManager {
     if (!readSubagentsConfig(taskCwd).enable_continue) throw new Error('Subagent task is not available.');
     if (existing.status !== 'stopping' && !isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     await this.awaitRunnerCleanup(existing.id);
+    this.assertAcceptingWork();
     const latest = this.getTask(input.task_id, taskCwd) ?? existing;
     if (!isTerminalStatus(latest.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     if (!latest.nested_session_path || !fs.existsSync(latest.nested_session_path)) {
@@ -622,10 +680,10 @@ export class SubagentManager {
     const definition = definitions.get(latest.agent.toLowerCase());
     if (!definition) throw new Error(`Subagent definition not found for continuation: ${latest.agent}`);
     try { this.history.upsertTask(taskCwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
-    const effectiveProfile = resolveContinuationProfile(definition, config, ctx, input);
+    const effectiveProfile = await this.continuationProfile(definition, config, ctx, input, parentSignal);
     const effectiveMode = resolveContinuationEffectiveMode({ explicitMode: input.mode, previousTask: latest, config });
     const continuationPrompt = sanitizeInteractionTransportText(input.prompt);
-    const continuationSessionId = sessionIdFromContext(ctx);
+    const continuationSessionId = this.runtimeAccess?.sessionId ?? sessionIdFromContext(ctx);
     this.liveStates.delete(latest.id);
     const task: SubagentTask = {
       ...latest,
@@ -659,7 +717,7 @@ export class SubagentManager {
       taskText: latest.task,
       context: latest.context,
       task,
-      ctx: { ...ctx, cwd: taskCwd },
+      ctx: this.runtimeAccess ? { cwd: taskCwd } : { ...ctx, cwd: taskCwd },
       config,
       effectiveProfile,
       parentSessionId: continuationSessionId,
@@ -670,6 +728,7 @@ export class SubagentManager {
       onTaskUpdate: () => onTaskUpdate?.([this.tasks.get(task.id)!].filter(Boolean)),
       limiter: this.limiter(taskCwd, config.max_concurrency),
     });
+    if (this.runtimeAccess) ctx = undefined;
     if (effectiveMode === 'background') return { mode: effectiveMode, task_ids: [task.id] };
     await this.wait(task.id);
     if (parentSignal?.aborted) throw new Error('Subagent continuation aborted');
@@ -697,6 +756,7 @@ export class SubagentManager {
       task.pending_message_count = 0;
       task.undelivered_message_count = task.undelivered_message_count ?? 0;
       if (cwd) this.record(cwd, task, task.last_activity, true);
+      this.controllers.get(id)?.abort();
       return task;
     }
     if (task.status === 'stopping') return task;
@@ -750,7 +810,7 @@ export class SubagentManager {
     limiter = createLimiter(1),
     displayName?: string,
   ): string {
-    const session_id = sessionIdFromContext(ctx);
+    const session_id = this.runtimeAccess?.sessionId ?? sessionIdFromContext(ctx);
     const effectiveProfile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
     const effectiveMode = resolveEffectiveSubagentMode({ invocationMode: mode, definition, config });
     const task: SubagentTask = {
@@ -780,6 +840,7 @@ export class SubagentManager {
   private launchAttempt(input: LaunchAttemptInput): void {
     const { definition, taskText, context, task, ctx, config, effectiveProfile, parentSessionId, nestedSessionPath, previousSnapshot, continuationPrompt, parentSignal, onTaskUpdate, limiter } = input;
     const cwd = ctx?.cwd ?? process.cwd();
+    const staticCtx = this.runtimeAccess ? undefined : ctx;
     const id = task.id;
     const controller = new AbortController();
     this.tasks.set(id, task);
@@ -804,9 +865,17 @@ export class SubagentManager {
       let acquired = false;
       let activeRunnerSettlement: Promise<void> | undefined;
       try {
-        await limiter.acquire();
-        acquired = true;
-        if (controller.signal.aborted) return;
+        while (true) {
+          if (controller.signal.aborted) return;
+          if (this.runtimeAccess?.getState() === 'closing' || this.runtimeAccess?.getState() === 'closed') throw new Error('Subagent session is closing.');
+          const acquiredToken = this.runtimeAccess ? (await this.runtimeAccess.waitForActiveLink(controller.signal)).token : undefined;
+          await limiter.acquire(controller.signal);
+          acquired = true;
+          if (controller.signal.aborted) return;
+          if (!this.runtimeAccess || (this.runtimeAccess.getState() === 'active' && this.runtimeAccess.getActiveLink()?.token === acquiredToken)) break;
+          limiter.release();
+          acquired = false;
+        }
         task.status = 'running';
         task.started_at = nowIso();
         task.last_activity_at = task.started_at;
@@ -816,6 +885,9 @@ export class SubagentManager {
         let interactionsHandled = 0;
         let result: Awaited<ReturnType<SubagentRunner>> | undefined;
         while (true) {
+          const invocationCtx = this.runtimeAccess
+            ? await this.contextForRunnerInvocation(controller.signal)
+            : runnerInvocationContext(staticCtx, staticCtx?.pi);
           const runnerPromise = this.runner({
             definition,
             task: taskText,
@@ -823,7 +895,7 @@ export class SubagentManager {
             parentPiSessionId: parentSessionId,
             context,
             cwd,
-            ctx,
+            ctx: invocationCtx,
             config,
             signal: controller.signal,
             effectiveProfile,
@@ -927,7 +999,10 @@ export class SubagentManager {
           this.onInteractionPromptActive?.(true);
           let response: ReturnType<typeof publishInteractionResponse>;
           try {
-            response = publishInteractionResponse(await promptMainThreadForInteraction(ctx, interactionRequest));
+            const interactionCtx = this.runtimeAccess
+              ? await this.contextForInteraction(controller.signal)
+              : staticCtx;
+            response = publishInteractionResponse(await promptMainThreadForInteraction(interactionCtx, interactionRequest));
           } finally {
             this.onInteractionPromptActive?.(false);
           }
@@ -966,7 +1041,8 @@ export class SubagentManager {
         this.record(cwd, task, 'completed', true);
         this.notifyTaskUpdate(id, onTaskUpdate, true);
         if (task.mode === 'background') {
-          ctx?.ui?.notify?.(`Subagent ${definition.name} completed: ${id}`, 'info');
+          const notificationCtx = this.runtimeAccess?.getActiveLink()?.ctx ?? staticCtx;
+          (notificationCtx as any)?.ui?.notify?.(`Subagent ${definition.name} completed: ${id}`, 'info');
           this.onTerminalBackgroundTask?.(task, cwd);
         }
       } catch (error) {
@@ -1004,7 +1080,8 @@ export class SubagentManager {
         task.ended_at = task.last_activity_at;
         this.record(cwd, task, task.last_activity, true);
         this.notifyTaskUpdate(id, onTaskUpdate, true);
-        ctx?.ui?.notify?.(`Subagent ${definition.name} failed: ${task.error}`, 'warning');
+        const notificationCtx = this.runtimeAccess?.getActiveLink()?.ctx ?? staticCtx;
+        (notificationCtx as any)?.ui?.notify?.(`Subagent ${definition.name} failed: ${task.error}`, 'warning');
         if (task.mode === 'background') this.onTerminalBackgroundTask?.(task, cwd);
       } finally {
         if (timeout) clearTimeout(timeout);
@@ -1024,6 +1101,39 @@ export class SubagentManager {
     const pending = this.runnerSettlements.get(taskId);
     if (!pending) return;
     await pending.catch(() => undefined);
+  }
+
+  async awaitSettled(): Promise<void> {
+    while (this.runnerSettlements.size > 0) {
+      await Promise.all([...this.runnerSettlements.values()].map((pending) => pending.catch(() => undefined)));
+    }
+  }
+
+  private assertAcceptingWork(): void {
+    const state = this.runtimeAccess?.getState();
+    if (state === 'closing' || state === 'closed') throw new Error('Subagent session is closing.');
+  }
+
+  private async contextForRunnerInvocation(signal: AbortSignal): Promise<RunnerInvocationContext> {
+    const link = await this.runtimeAccess!.waitForActiveLink(signal);
+    return runnerInvocationContext(link.ctx, link.pi);
+  }
+
+  private async contextForInteraction(signal: AbortSignal): Promise<{ ui?: unknown }> {
+    const link = await this.runtimeAccess!.waitForActiveLink(signal);
+    return { ui: (link.ctx as any).ui };
+  }
+
+  private async continuationProfile(
+    definition: SubagentDefinition,
+    config: SubagentsConfig,
+    staticCtx: any,
+    input: SubagentContinueInput,
+    signal?: AbortSignal,
+  ): Promise<EffectiveSubagentProfile> {
+    if (!this.runtimeAccess) return resolveContinuationProfile(definition, config, staticCtx, input);
+    const link = await this.runtimeAccess.waitForActiveLink(signal);
+    return resolveContinuationProfile(definition, config, { ...link.ctx, pi: link.pi }, input);
   }
 
   private cachedPersistedSessionTasks(cwd: string, sessionId: string): SubagentTask[] {

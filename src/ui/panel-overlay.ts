@@ -1,18 +1,11 @@
 import { readSubagentsConfig } from '../config.js';
-import type { SubagentManager } from '../manager.js';
+import type { GenerationToken, RuntimeResolverV1 } from '../runtime-registry.js';
 import type { SubagentTask } from '../types.js';
 import { createSubagentsRenderLogger } from '../render-debug.js';
 import { truncateToWidth, visibleWidth } from '../render/text-width.js';
 import { resolveSubagentExternalToolDefinitionFromInfo } from '../thread-view.js';
 import { SubagentsHistoryPanel } from './subagents-history-panel.js';
 import { classifySubagentsPanelInput, createSubagentsPanelKeyMatcher } from './panel-input.js';
-
-function currentSessionId(ctx: any): string | undefined {
-  const direct = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const file = ctx?.sessionManager?.getSessionFile?.();
-  return typeof file === 'string' && file.length > 0 ? file : undefined;
-}
 
 function contextWindowForTask(ctx: any, task: SubagentTask): number | undefined {
   const label = task.model;
@@ -69,12 +62,25 @@ export function resolveRegisteredToolDefinition(ctx: any, pi: any, name: string)
 }
 
 export type SubagentsPanelOpener = (taskId?: string) => Promise<void> | void;
-let activePanelOpener: SubagentsPanelOpener | undefined;
+type OwnedPanelOpener = { token: GenerationToken; opener: SubagentsPanelOpener };
+let activePanelOpener: OwnedPanelOpener | undefined;
 let lastPanelOpenTime = 0;
+const LEGACY_PANEL_TOKEN = Symbol.for('pi-subagents-j0k3r.panel-opener.legacy');
 
-export function registerSubagentsPanelOpener(opener: SubagentsPanelOpener | undefined): void {
-  activePanelOpener = opener;
+export function registerSubagentsPanelOpener(token: GenerationToken, opener: SubagentsPanelOpener): () => void;
+export function registerSubagentsPanelOpener(opener: SubagentsPanelOpener | undefined): () => void;
+export function registerSubagentsPanelOpener(tokenOrOpener: GenerationToken | SubagentsPanelOpener | undefined, ownedOpener?: SubagentsPanelOpener): () => void {
+  const token = typeof tokenOrOpener === 'symbol' ? tokenOrOpener : LEGACY_PANEL_TOKEN;
+  const opener = typeof tokenOrOpener === 'function' ? tokenOrOpener : ownedOpener;
+  if (!opener) {
+    if (token === LEGACY_PANEL_TOKEN) activePanelOpener = undefined;
+    return () => undefined;
+  }
+  activePanelOpener = { token, opener };
   lastPanelOpenTime = 0;
+  return () => {
+    if (activePanelOpener?.token === token) activePanelOpener = undefined;
+  };
 }
 
 export function resetSubagentsPanelOpenerStateForTests(): void {
@@ -86,26 +92,36 @@ export function openSubagentsPanel(taskId?: string): void {
   if (now - lastPanelOpenTime < 600) return;
   lastPanelOpenTime = now;
   if (activePanelOpener) {
-    void activePanelOpener(taskId);
+    void activePanelOpener.opener(taskId);
   }
 }
 
 export async function showSubagentsPanel(input: {
-  ctx: any;
-  pi: any;
-  manager: SubagentManager;
+  resolver: RuntimeResolverV1;
+  sessionId: string;
+  token: GenerationToken;
   selectedTaskId?: string;
   setWidgetInputSuspended: (value: boolean) => void;
   setActivePanelCancelSelected: (fn: (() => void) | undefined) => void;
   setActivePanelRequestRender: (fn: (() => void) | undefined) => void;
 }) {
-  const { ctx, pi, manager, selectedTaskId, setWidgetInputSuspended, setActivePanelCancelSelected, setActivePanelRequestRender } = input;
-  const cwd = ctx?.cwd ?? process.cwd();
-  const sessionId = currentSessionId(ctx);
+  const { resolver, sessionId, token, selectedTaskId, setWidgetInputSuspended, setActivePanelCancelSelected, setActivePanelRequestRender } = input;
+  const owned = () => {
+    try {
+      const resolution = resolver.resolveSession(sessionId);
+      return resolution.link.token === token ? resolution : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const initial = owned();
+  if (!initial) return;
+  const cwd = initial.link.cwd;
+  const initialCtx = initial.link.ctx as any;
   let refresh: NodeJS.Timeout | undefined;
   setWidgetInputSuspended(true);
   try {
-    await ctx.ui.custom(
+    await initialCtx.ui?.custom?.(
       (tui: any, theme: any, _keybindings: any, done: () => void) => {
         setMouseTracking(tui, true);
         const config = readSubagentsConfig(cwd);
@@ -120,7 +136,7 @@ export async function showSubagentsPanel(input: {
         };
         const baseMatchesKey = createSubagentsPanelKeyMatcher(_keybindings);
         const panel = new SubagentsHistoryPanel(
-          () => manager.listSessionTasks(cwd, sessionId).slice(0, 100),
+          () => owned()?.manager.listSessionTasks(cwd, sessionId).slice(0, 100) ?? [],
           theme,
           close,
           (data: string, key: string) => {
@@ -138,20 +154,27 @@ export async function showSubagentsPanel(input: {
             cwd,
             visibleWidth,
             truncateToWidth,
-            getToolDefinition: (name: string) => resolveRegisteredToolDefinition(ctx, pi, name),
-            getMessageRenderer: (customType: string) => ctx?.pi?.getMessageRenderer?.(customType) ?? ctx?.pi?.customMessageRenderers?.get?.(customType) ?? ctx?.customMessageRenderers?.get?.(customType),
-            showImages: ctx?.showImages,
-            imageWidthCells: ctx?.imageWidthCells,
+            getToolDefinition: (name: string) => {
+              const current = owned();
+              return current ? resolveRegisteredToolDefinition(current.link.ctx, current.link.pi, name) : undefined;
+            },
+            getMessageRenderer: (customType: string) => {
+              const current = owned();
+              const currentCtx = current?.link.ctx as any;
+              return currentCtx?.pi?.getMessageRenderer?.(customType) ?? currentCtx?.pi?.customMessageRenderers?.get?.(customType) ?? currentCtx?.customMessageRenderers?.get?.(customType);
+            },
+            showImages: initialCtx.showImages,
+            imageWidthCells: initialCtx.imageWidthCells,
           },
           () => Math.max(12, tui?.terminal?.rows ?? process.stdout.rows ?? 42),
-          (id: string) => manager.getTask(id, cwd),
+          (id: string) => owned()?.manager.getTask(id, cwd),
           selectedTaskId,
-          (id: string) => manager.cancel(id, 'cancelled from subagents detail view'),
+          (id: string) => owned()?.manager.cancel(id, 'cancelled from subagents detail view'),
           config.detail_cancel_shortcut ?? 'x',
           {
             timeoutMs: config.timeout_ms,
             stallTimeoutMs: config.stall_timeout_ms,
-            contextWindowForTask: (task: SubagentTask) => contextWindowForTask(ctx, task),
+            contextWindowForTask: (task: SubagentTask) => contextWindowForTask(owned()?.link.ctx, task),
           },
         );
         renderLogger.log({ event: 'panel_created' });
@@ -163,6 +186,10 @@ export async function showSubagentsPanel(input: {
           tui.requestRender?.();
         });
         refresh = setInterval(() => {
+          if (!owned()) {
+            close();
+            return;
+          }
           nextRenderReason = 'interval';
           renderLogger.log({ event: 'render_requested', reason: nextRenderReason });
           tui.requestRender?.();
